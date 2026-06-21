@@ -15,7 +15,7 @@ final class OverlayPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false                 // SwiftUI draws the card's own shadow
-        isMovableByWindowBackground = true
+        isMovableByWindowBackground = false   // dragging the card drags the file out, not the window
         hidesOnDeactivate = false
         animationBehavior = .utilityWindow
     }
@@ -33,33 +33,55 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     private let fileURL: URL
     private let store: FolderStore
+    private let pins: PinStore
     private let model: ShotModel
     private var panel: OverlayPanel!
     private var hosting: NSHostingController<ShotView>!
     private var autoDismiss: DispatchWorkItem?
     private var closed = false
+    private var pinnedURL: URL?      // the copy in the pin store, if pinned
 
-    init(fileURL: URL, store: FolderStore) {
+    init(fileURL: URL, store: FolderStore, pins: PinStore = PinStore()) {
         self.fileURL = fileURL
         self.store = store
+        self.pins = pins
         let image = NSImage(contentsOf: fileURL) ?? NSImage(size: NSSize(width: 1, height: 1))
         self.model = ShotModel(image: image,
+                               fileURL: fileURL,
                                fileName: fileURL.deletingPathExtension().lastPathComponent,
                                ext: fileURL.pathExtension,
-                               folders: [store.desktopFolder()] + store.savedFolders())
+                               folders: [store.desktopFolder()] + store.savedFolders(),
+                               recentFolders: store.recentFolders())
         super.init()
         wire()
     }
 
     private func wire() {
         model.onCopy = { [weak self] in self?.copy() }
-        model.onDismiss = { [weak self] in self?.close() }
+        model.onDelete = { [weak self] in self?.delete() }
         model.onMarkup = { [weak self] in self?.markup() }
         model.onShare = { [weak self] in self?.share() }
         model.onEngaged = { [weak self] in self?.cancelAutoDismiss() }
         model.onNeedsKey = { [weak self] in self?.panel.makeKeyAndOrderFront(nil) }
         model.onSave = { [weak self] folder, name in self?.save(folder, name: name) }
         model.onCreate = { [weak self] name in self?.create(name) }
+        model.onPin = { [weak self] in self?.pinAndSlideAway() }
+    }
+
+    /// Pin keeps a copy in the pin store (shown in the menu-bar gallery), then the
+    /// preview slides away to the right and the rest of the stack reflows.
+    private func pinAndSlideAway() {
+        guard !closed else { return }
+        pinnedURL = pins.pin(fileURL)
+        model.pinned = (pinnedURL != nil)
+        closed = true
+        cancelAutoDismiss()
+        model.pinning = true             // ShotView slides the preview away (transitions-dev, 0.34s)
+        let p = panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) { [weak self] in
+            p?.orderOut(nil)
+            self?.onClosed?()
+        }
     }
 
     // MARK: presentation (the OverlayStack positions us in the corner)
@@ -140,6 +162,30 @@ final class OverlayController: NSObject, NSWindowDelegate {
         close()
     }
 
+    /// Delete the screenshot outright (move it to the Trash) so it isn't kept anywhere.
+    private func delete() {
+        do { try FileManager.default.trashItem(at: fileURL, resultingItemURL: nil) }
+        catch { NSLog("macshot: delete failed — \(error.localizedDescription)") }
+        dissolveAndClose()
+    }
+
+    /// The card dissolves (blur + shrink + sink + fade), then the rest of the stack reflows.
+    private func dissolveAndClose() {
+        guard !closed else { return }
+        closed = true
+        cancelAutoDismiss()
+        model.deleting = true            // ShotView animates the dissolve (0.30s)
+        let p = panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+            p?.orderOut(nil)
+            self?.onClosed?()
+        }
+    }
+
+    /// Verification hooks: fire the exact closures the buttons fire.
+    func testInvokeDelete() { model.onDelete() }
+    func testInvokePin() { model.onPin() }
+
     private func share() {
         guard let view = panel.contentView else { return }
         let picker = NSSharingServicePicker(items: [fileURL])
@@ -149,7 +195,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private func save(_ folder: Folder, name: String) {
         do {
             _ = try store.move(fileURL, into: folder.url, baseName: name)
-            if !folder.isRoot { store.remember(folder.url) }     // bump to most-recent
+            if !folder.isRoot { store.remember(folder.url) }     // bump to most-recent in the picker list
+            store.rememberSave(folder)                           // record for the quick-save pills
             model.showSaved(folder.isRoot ? "Desktop" : folder.name)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) { [weak self] in self?.close() }
         } catch {
@@ -219,7 +266,7 @@ final class OverlayStack {
 
     private func layout() {
         guard let screen = NSScreen.main else { return }
-        let v = screen.visibleFrame
+        let v = screen.frame          // true screen corner (below the Dock), like the native thumbnail
         var y = v.minY + margin
         var placements: [(OverlayController, NSPoint)] = []
         for c in controllers {           // oldest → bottom, newest → top
