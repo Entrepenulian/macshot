@@ -10,7 +10,11 @@ final class DemoController: NSObject, NSApplicationDelegate {
     private var panel: OverlayPanel!
     private var stack: OverlayStack?
     private var controllers: [OverlayController] = []
+    private var demoStatusItem: NSStatusItem?
+    private var demoPanel: GalleryPanel?
     private let mode: String =
+        CommandLine.arguments.contains("quicksave") ? "quicksave" :
+        CommandLine.arguments.contains("gallery") ? "gallery" :
         CommandLine.arguments.contains("reflow") ? "reflow" :
         CommandLine.arguments.contains("stack") ? "stack" :
         CommandLine.arguments.contains("picker") ? "picker" : "hover"
@@ -19,6 +23,7 @@ final class DemoController: NSObject, NSApplicationDelegate {
     private let shots: [(Int, Int, Int)] = [(1600, 500, 0), (1512, 982, 1), (900, 1400, 2)]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if mode == "gallery" { showGallery(); return }
         if mode == "stack" || mode == "reflow" { showStack(reflow: mode == "reflow"); return }
 
         RenderEnv.forceReveal = true
@@ -28,8 +33,15 @@ final class DemoController: NSObject, NSApplicationDelegate {
                Folder(id: "b", name: "website info", url: URL(fileURLWithPath: "/tmp"), count: 3)]
             : [Folder(id: "d", name: "Desktop", url: URL(fileURLWithPath: "/tmp"), count: 0, isRoot: true)]
 
-        let model = ShotModel(image: shotImage(1512, 982, 1), fileName: "Screenshot 2026-06-20", ext: "png", folders: folders)
+        let recents: [Folder] = mode == "quicksave"
+            ? [Folder(id: "r1", name: "Design", url: URL(fileURLWithPath: "/tmp"), count: 0),
+               Folder(id: "r2", name: "Receipts", url: URL(fileURLWithPath: "/tmp"), count: 0),
+               Folder(id: "r3", name: "website info", url: URL(fileURLWithPath: "/tmp"), count: 0)]
+            : []
+        let model = ShotModel(image: shotImage(1512, 982, 1), fileName: "Screenshot 2026-06-20",
+                              ext: "png", folders: folders, recentFolders: recents)
         if mode == "picker" { model.mode = .picker }
+        if mode == "quicksave" { model.mode = .quickSave }
 
         let hosting = NSHostingController(rootView: ShotView(model: model))
         hosting.sizingOptions = [.preferredContentSize]
@@ -40,7 +52,7 @@ final class DemoController: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, let screen = NSScreen.main else { return }
-            let v = screen.visibleFrame
+            let v = screen.frame
             let size = self.panel.frame.size
             self.panel.setFrameOrigin(NSPoint(x: v.maxX - size.width - 16, y: v.minY + 16))
             let full = screen.frame
@@ -80,6 +92,51 @@ final class DemoController: NSObject, NSApplicationDelegate {
         let w: CGFloat = 440, h = min(900, full.height - 10)
         print("CAPTURE_RECT \(Int(full.width - w)) \(Int(max(0, full.height - h))) \(Int(w)) \(Int(h))")
         fflush(stdout)
+    }
+
+    private func showGallery() {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("macshot-gallery-\(UUID().uuidString)")
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = PinStore(root: root)
+        for i in 0..<5 {
+            let url = root.appendingPathComponent("Pin \(i + 1).png")
+            writePNG(shotImage(1200, 800, i), to: url)
+            store.pin(url)
+        }
+        let model = GalleryModel()
+        model.pins = store.pins()
+
+        // Real status item + the real flush GalleryPanel — exactly the production path.
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let img = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "macshot")
+        img?.isTemplate = true
+        item.button?.image = img
+        demoStatusItem = item
+
+        let hosting = NSHostingView(rootView: GalleryView(model: model))
+        hosting.layoutSubtreeIfNeeded()
+        var size = hosting.fittingSize
+        if size.width < 10 || size.height < 10 { size = NSSize(width: 300, height: 360) }
+        let panel = GalleryPanel(contentSize: size)
+        panel.contentView = hosting
+        demoPanel = panel
+
+        if let screen = item.button?.window?.screen ?? NSScreen.main {
+            let x = screen.frame.maxX - size.width - 8             // mimic the real app's right-side icon
+            let y = screen.visibleFrame.maxY - size.height        // top flush under the menu bar
+            panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            let f = panel.frame
+            let pad: CGFloat = 26
+            print("CAPTURE_RECT \(Int(f.origin.x - pad)) 0 \(Int(f.width + pad * 2)) \(Int(NSScreen.main!.frame.height - f.origin.y + pad))")
+            fflush(stdout)
+        }
     }
 
     private func writePNG(_ img: NSImage, to url: URL) {
