@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// Deterministic, side-effect-free checks of the filing + detection logic.
 /// Run with:  swift run macshot --selftest
@@ -48,6 +49,51 @@ enum SelfTest {
             check(d1?.lastPathComponent == "same.png" && d2?.lastPathComponent == "same 2.png",
                   "resolves name collisions → \(d2?.lastPathComponent ?? "nil")")
         }
+
+        // quick-save recents: every save target (incl. Desktop) is recorded, newest first, distinct
+        check(store.recentFolders().isEmpty, "recents start empty")
+        store.rememberSave(store.desktopFolder())
+        if let r = receipts { store.rememberSave(Folder(id: r.path, name: "Receipts", url: r, count: 0)) }
+        store.rememberSave(store.desktopFolder())   // re-saving bumps to front, no duplicate
+        let recents = store.recentFolders()
+        check(recents.count == 2, "recents are distinct → \(recents.map { $0.name })")
+        check(recents.first?.name == "Desktop", "most-recent save is first → \(recents.first?.name ?? "nil")")
+        check(store.recentFolders(max: 1).count == 1, "recents respect the max")
+
+        let tinyImg = NSImage(size: NSSize(width: 4, height: 4))
+        let qsEmpty = ShotModel(image: tinyImg, fileName: "x", ext: "png",
+                                folders: [store.desktopFolder()], recentFolders: [])
+        check(qsEmpty.quickFolders.count == 1 && qsEmpty.quickFolders.first?.isRoot == true,
+              "quick-save falls back to Desktop when there are no recents")
+        let qsRecent = ShotModel(image: tinyImg, fileName: "x", ext: "png",
+                                 folders: [store.desktopFolder()], recentFolders: recents)
+        check(qsRecent.quickFolders.count == 2, "quick-save shows the recents → \(qsRecent.quickFolders.count)")
+
+        // delete: the corner trash button moves the screenshot out of its folder (to Trash)
+        let toDelete = tmp.appendingPathComponent("Screenshot to delete.png")
+        fm.createFile(atPath: toDelete.path, contents: Data([1, 2, 3]))
+        var trashed: NSURL?
+        let didTrash = (try? fm.trashItem(at: toDelete, resultingItemURL: &trashed)) != nil
+        check(didTrash && !fm.fileExists(atPath: toDelete.path), "delete moves the screenshot out of its folder")
+        if let t = trashed as URL? { try? fm.removeItem(at: t) }    // clean up the trashed test file
+
+        print("PinStore")
+        let pinStore = PinStore(root: tmp.appendingPathComponent("pinroot"))
+        let pa = tmp.appendingPathComponent("Pin A.png"); fm.createFile(atPath: pa.path, contents: Data([1, 2, 3]))
+        let pb = tmp.appendingPathComponent("Pin B.png"); fm.createFile(atPath: pb.path, contents: Data([4, 5, 6]))
+        check(pinStore.pins().isEmpty, "pin store starts empty")
+        let pinnedA = pinStore.pin(pa)
+        _ = pinStore.pin(pb)
+        check(pinStore.pins().count == 2, "pinning keeps copies → \(pinStore.pins().count)")
+        check(fm.fileExists(atPath: pa.path), "the original screenshot is left in place after pinning")
+        if let pinnedA {
+            pinStore.unpin(pinnedA)
+            if let trashDir = try? fm.url(for: .trashDirectory, in: .userDomainMask, appropriateFor: nil, create: false) {
+                for item in (try? fm.contentsOfDirectory(at: trashDir, includingPropertiesForKeys: nil)) ?? []
+                where item.lastPathComponent.hasPrefix("Pin A") { try? fm.removeItem(at: item) }
+            }
+        }
+        check(pinStore.pins().count == 1, "unpin removes a pin → \(pinStore.pins().count)")
 
         print("ScreenshotWatcher")
         let watchDir = tmp.appendingPathComponent("watch")
