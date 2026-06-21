@@ -1,0 +1,15 @@
+# Build output
+.build/
+macshot.app/
+*.o
+*.swiftmodule
+
+# macOS
+.DS_Store
+
+# Tooling / local
+.gstack/
+.claude/
+
+# The original web mockup (kept locally as a design reference, not part of the app)
+web-prototype/
