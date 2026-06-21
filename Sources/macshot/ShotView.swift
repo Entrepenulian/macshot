@@ -24,12 +24,14 @@ enum Theme {
 
 // ── model ───────────────────────────────────────────────────────────────────
 final class ShotModel: ObservableObject {
-    enum Mode { case revealed, picker, saved }
+    enum Mode { case revealed, quickSave, picker, saved }
 
     let image: NSImage
+    let fileURL: URL
     @Published var baseName: String
     let ext: String
     let allFolders: [Folder]
+    let recentFolders: [Folder]      // last folders saved into — the quick-save pills
 
     @Published var mode: Mode = .revealed
     @Published var hovering = false
@@ -38,21 +40,36 @@ final class ShotModel: ObservableObject {
     @Published var selection = 0
     @Published var savedLabel = ""
     @Published var pinned = false
+    @Published var deleting = false   // drives the dissolve-out when trashed
+    @Published var pinning = false    // drives the slide-away when pinned
 
     var onCopy: () -> Void = {}
-    var onDismiss: () -> Void = {}
+    var onDelete: () -> Void = {}
     var onMarkup: () -> Void = {}
     var onShare: () -> Void = {}
     var onEngaged: () -> Void = {}
+    var onPin: () -> Void = {}
     var onNeedsKey: () -> Void = {}
     var onSave: (Folder, String) -> Void = { _, _ in }
     var onCreate: (String) -> Void = { _ in }
 
-    init(image: NSImage, fileName: String, ext: String, folders: [Folder]) {
+    init(image: NSImage, fileURL: URL = URL(fileURLWithPath: "/dev/null"),
+         fileName: String, ext: String, folders: [Folder], recentFolders: [Folder] = []) {
         self.image = image
+        self.fileURL = fileURL
         self.baseName = fileName
         self.ext = ext
         self.allFolders = folders
+        self.recentFolders = recentFolders
+    }
+
+    /// The quick-save pills: up to 3 most-recent folders, falling back to the Desktop
+    /// baseline so there's always at least one target.
+    var quickFolders: [Folder] {
+        let r = Array(recentFolders.prefix(3))
+        if !r.isEmpty { return r }
+        if let root = allFolders.first(where: { $0.isRoot }) { return [root] }
+        return Array(allFolders.prefix(1))
     }
 
     var dimsText: String {
@@ -77,6 +94,7 @@ final class ShotModel: ObservableObject {
         return selection < f.count ? f[selection] : nil   // nil = the "Create …" row
     }
 
+    func enterQuickSave() { mode = .quickSave; onEngaged() }
     func enterPicker() { mode = .picker; onEngaged() }
     func backToShot() { mode = .revealed; search = ""; selection = 0 }
     func engage() { onEngaged() }
@@ -105,6 +123,8 @@ struct ShotView: View {
 
     @State private var appeared = RenderEnv.solid   // pre-revealed when rendering offscreen
     private var revealUI: Bool { RenderEnv.forceReveal || model.hovering }
+    // Quick-save keeps the UI up even if the pointer drifts off mid-interaction.
+    private var showUI: Bool { revealUI || model.mode == .quickSave }
 
     // Fixed width; height follows the screenshot's real aspect ratio, capped so a very
     // tall shot doesn't make a giant panel (and a very wide one doesn't get too thin).
@@ -132,10 +152,17 @@ struct ShotView: View {
         Group {
             if model.mode == .picker { pickerFace } else { shotFace }
         }
-        .opacity(appeared ? 1 : 0)
+        // Dissolve: the card loses focus (blur), recedes (scale), sinks, and drains away.
+        .scaleEffect(model.deleting ? 0.95 : 1, anchor: .center)
+        .blur(radius: model.deleting ? 17 : 0)
+        .brightness(model.deleting ? -0.06 : 0)
+        .offset(x: model.pinning ? 84 : 0, y: model.deleting ? 6 : 0)   // pin → slide off to the right
+        .opacity((model.deleting || model.pinning) ? 0 : (appeared ? 1 : 0))
         .onAppear { withAnimation(.easeOut(duration: 0.12)) { appeared = true } }
-        .animation(.spring(response: 0.30, dampingFraction: 0.88), value: model.mode)
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.34), value: model.mode)   // transitions-dev resize ease
         .animation(.easeOut(duration: 0.16), value: model.hovering)
+        .animation(.easeOut(duration: 0.30), value: model.deleting)
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.34), value: model.pinning) // transitions-dev slide-away
         .onHover { h in model.hovering = h; if h { model.engage() } }
     }
 
@@ -148,14 +175,27 @@ struct ShotView: View {
                 .aspectRatio(contentMode: .fill)
                 .frame(width: W, height: imageH, alignment: .top)   // crop (if any) hangs off the bottom
                 .clipped()
-                .blur(radius: revealUI ? 3.5 : 0)
-                .overlay(Color.black.opacity(revealUI ? 0.20 : 0))
+                .blur(radius: showUI ? 3.5 : 0)
+                .overlay(Color.black.opacity(showUI ? 0.20 : 0))
 
             if model.mode == .saved { savedOverlay }
-            else { controls.opacity(revealUI ? 1 : 0) }
+            else { controls.opacity(showUI ? 1 : 0) }
         }
         .frame(width: W, height: imageH)
         .clipShape(RoundedRectangle(cornerRadius: Theme.rImage, style: .continuous))
+        // Drag the shot out as a real file: drop it into any app that takes an image
+        // (Mail, Slack, Notes, a text field, Finder…) and that app shows its own drop
+        // target. Let go on nothing and it just snaps back — the panel never moves.
+        .onDrag({
+            model.engage()
+            return NSItemProvider(contentsOf: model.fileURL) ?? NSItemProvider()
+        }, preview: {
+            Image(nsImage: model.image)
+                .resizable().interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        })
     }
 
     private var controls: some View {
@@ -168,23 +208,55 @@ struct ShotView: View {
             }
             .padding(.top, 12)
 
-            corner(model.pinned ? "pin.fill" : "pin", offset: 0) { model.pinned.toggle(); model.engage() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            corner("xmark", offset: 0) { model.onDismiss() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            corner("pencil", offset: 0) { model.onMarkup() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            corner("square.and.arrow.up", offset: -1) { model.onShare() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-
-            VStack(spacing: 10) {
-                pill(model.copied ? "checkmark" : "doc.on.doc",
-                     model.copied ? "Copied" : "Copy", primary: false) { model.onCopy() }
-                pill("folder", "Save", primary: true) { model.enterPicker() }
+            // Corners step aside during quick-save so the focus is the save targets.
+            if model.mode != .quickSave {
+                ZStack {
+                    corner(model.pinned ? "pin.fill" : "pin", offset: 0) { model.onPin() }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    corner("trash", offset: 0) { model.onDelete() }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    corner("pencil", offset: 0) { model.onMarkup() }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    corner("square.and.arrow.up", offset: -1) { model.onShare() }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                }
+                .transition(.opacity)
             }
+
+            // Save morphs the two pills into the quick-save set (last folders + ✕ / •••).
+            Group {
+                if model.mode == .quickSave { quickSaveCluster }
+                else { defaultPills }
+            }
+            .transition(.scale(scale: 0.97, anchor: .center).combined(with: .opacity))
         }
         .padding(11)
     }
+
+    private var defaultPills: some View {
+        VStack(spacing: 10) {
+            pill(model.copied ? "checkmark" : "doc.on.doc",
+                 model.copied ? "Copied" : "Copy", primary: false) { model.onCopy() }
+            pill("folder", "Save", primary: true) { model.enterQuickSave() }
+        }
+    }
+
+    private var quickSaveCluster: some View {
+        VStack(spacing: 10) {
+            ForEach(model.quickFolders) { folder in
+                pill("folder", folder.isRoot ? "Desktop" : shortName(folder.name), primary: false) {
+                    model.onSave(folder, model.baseName)
+                }
+            }
+            HStack(spacing: 12) {
+                corner("xmark", offset: 0) { model.backToShot() }
+                corner("ellipsis", offset: 0) { model.enterPicker() }
+            }
+            .padding(.top, 3)
+        }
+    }
+
+    private func shortName(_ s: String) -> String { s.count > 22 ? String(s.prefix(21)) + "…" : s }
 
     private var savedOverlay: some View {
         VStack(spacing: 10) {
@@ -376,10 +448,11 @@ struct PillButton: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: symbol).font(.system(size: 14, weight: .semibold))
-                Text(label).font(.system(size: 14.5, weight: .semibold))
+                Text(label).font(.system(size: 14.5, weight: .semibold)).lineLimit(1).truncationMode(.middle)
             }
             .foregroundStyle(primary ? Theme.primaryInk : Theme.ink1)
             .frame(minWidth: 132).frame(height: 44)
+            .fixedSize(horizontal: true, vertical: false)
             .background(background)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(primary ? Color.clear : Theme.hairline, lineWidth: 1))
