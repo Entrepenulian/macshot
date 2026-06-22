@@ -30,14 +30,28 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key>  <string>14.0</string>
   <key>LSUIElement</key>             <true/>
   <key>NSHighResolutionCapable</key> <true/>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
 </dict>
 </plist>
 PLIST
 
-# Ad-hoc sign so macOS gives the app a stable identity (TCC remembers the
-# Desktop-access grant across launches instead of re-asking).
-echo "[4/4] ad-hoc signing..."
-codesign --force --sign - "${APP}" >/dev/null 2>&1 || echo "  (codesign skipped)"
+# Sign with a STABLE self-signed identity so macOS TCC grants (Screen Recording,
+# Accessibility, Desktop access) persist across rebuilds. Ad-hoc signatures change
+# their cdhash every build, which silently resets every permission — the whole
+# reason "Screenshot site" kept asking for access it had already been given.
+echo "[4/4] signing with stable identity..."
+SIGN_KC="macshot-signing.keychain"
+security unlock-keychain -p macshotsign "${SIGN_KC}" 2>/dev/null || true
+if security find-identity -p codesigning "${SIGN_KC}" 2>/dev/null | grep -q "macshot Self Sign"; then
+  codesign --force --sign "macshot Self Sign" --keychain "${SIGN_KC}" "${APP}" >/dev/null 2>&1 \
+    && echo "  signed: macshot Self Sign (stable)" \
+    || { echo "  stable sign failed → ad-hoc"; codesign --force --sign - "${APP}" >/dev/null 2>&1; }
+else
+  echo "  no stable identity found → ad-hoc"; codesign --force --sign - "${APP}" >/dev/null 2>&1
+fi
 
 echo "OK - built ${APP}"
 echo
