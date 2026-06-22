@@ -44,9 +44,11 @@ macshot fixes the last step. The instant a screenshot is saved, a panel appears 
 
 <img src="docs/create.png" width="430" alt="Type a name to create a new folder">
 
-**Stack them.** Take a few in a row and they stack neatly in the corner, newest on top, each at its real proportions. File them whenever you're ready. Dismiss one and the rest slide down to fill the gap.
+**Stack them.** Take a few in a row and they stack in the corner, newest on top, each at its real proportions — rock steady, the ones already there never budge when a new one lands. Once you're past three, the stack turns into a smooth scroll-through column: no scroll bar, the top and bottom edges softly fade so nothing ever gets buried, and your cursor anywhere over the stack scrolls it. File them whenever you're ready; dismiss one and the rest slide up to fill the gap.
 
-<img src="docs/stack-rest.png" width="320" alt="Two screenshots stacked in the corner">
+<img src="docs/stack-live.png" width="300" alt="A scrollable stack of screenshot previews in the corner">
+
+**Screenshot a web page.** Pick **Screenshot site** from the menu and macshot captures exactly the page you're looking at in your browser — just the content, no tabs or toolbar — straight into the corner, ready to file like any other shot.
 
 **It stays on your Mac.** No account, no cloud, no telemetry. macshot moves files on your own disk. Nothing leaves.
 
@@ -92,8 +94,11 @@ Sources/macshot/
   AppController.swift     menu bar, wiring, login-item / thumbnail toggle
   ScreenshotWatcher.swift detects new screenshots the instant they finish
   FolderStore.swift       remembers your folders, creates + moves files
-  Overlay.swift           the floating panel + the corner stack
-  ShotView.swift          the SwiftUI glass UI
+  Overlay.swift           the one scrollable panel that hosts the corner stack
+  ShotView.swift          the SwiftUI glass card UI
+  Gallery.swift           the menu-bar dropdown + pinned-shots gallery
+  PinStore.swift          keeps pinned screenshots for the gallery
+  WebCapture.swift        finds a browser's visible page region (for Screenshot site)
 ```
 
 ## Built with
