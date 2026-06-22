@@ -37,6 +37,39 @@ if CommandLine.arguments.contains("--dragtest") {
     exit(droppable && staysPut ? 0 : 1)
 }
 
+if let i = CommandLine.arguments.firstIndex(of: "--webshottest") {
+    let app = NSApplication.shared
+    let urlStr = (i + 1 < CommandLine.arguments.count) ? CommandLine.arguments[i + 1] : "https://example.com"
+    guard let url = URL(string: urlStr) else { print("bad url"); exit(1) }
+    WebShot.capture(url: url, to: URL(fileURLWithPath: "/tmp/webshot.png")) { ok in
+        print(ok ? "WEBSHOT OK → /tmp/webshot.png" : "WEBSHOT FAILED")
+        exit(ok ? 0 : 1)
+    }
+    app.run()
+}
+
+if CommandLine.arguments.contains("--sitetest") {
+    _ = NSApplication.shared
+    print("AX trusted: \(WebCapture.axTrusted(prompt: false))")
+    if let b = WebCapture.frontmostBrowser() {
+        print("browser: \(b.localizedName ?? "?") — \(b.bundleIdentifier ?? "?")")
+        if let win = WebCapture.frontmostWindowBounds(of: b) {
+            print("window: \(Int(win.minX)),\(Int(win.minY)) size \(Int(win.width))×\(Int(win.height))")
+            if let wa = WebCapture.webAreaFrame(of: b) {
+                print("MEASURED CHROME INSET: \(Int(wa.minY - win.minY))   (set this as the per-browser inset)")
+            }
+        }
+        if let f = WebCapture.webAreaFrame(of: b) {
+            print("web area: \(Int(f.minX)),\(Int(f.minY)) size \(Int(f.width))×\(Int(f.height))")
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", "-R\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height))", "/tmp/sitetest.png"]
+            try? p.run(); p.waitUntilExit()
+            print("captured /tmp/sitetest.png")
+        } else { print("no web area found") }
+    } else { print("no running browser") }
+    exit(0)
+}
+
 if let i = CommandLine.arguments.firstIndex(of: "--render") {
     _ = NSApplication.shared
     let out = (i + 1 < CommandLine.arguments.count) ? CommandLine.arguments[i + 1] : "/tmp/macshot.png"
