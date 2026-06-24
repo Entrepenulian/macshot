@@ -28,6 +28,23 @@ final class PinStore {
         catch { NSLog("macshot: pin failed — \(error.localizedDescription)"); return nil }
     }
 
+    /// Pin a raw image that isn't a file on disk — dragged from a browser, Preview,
+    /// Photos, a screenshot tool, anywhere. Encodes it to PNG in the pin store.
+    @discardableResult
+    func pinImage(_ image: NSImage, baseName: String = "Dropped Image") -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let fm = FileManager.default
+        var dest = dir.appendingPathComponent(baseName).appendingPathExtension("png")
+        var n = 2
+        while fm.fileExists(atPath: dest.path) {
+            dest = dir.appendingPathComponent("\(baseName) \(n)").appendingPathExtension("png"); n += 1
+        }
+        do { try png.write(to: dest); return dest }
+        catch { NSLog("macshot: pin image failed — \(error.localizedDescription)"); return nil }
+    }
+
     /// Remove a pin (to the Trash, so it's recoverable).
     func unpin(_ url: URL) {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
