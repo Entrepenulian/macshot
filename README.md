@@ -50,6 +50,12 @@ macshot fixes the last step. The instant a screenshot is saved, a panel appears 
 
 **Screenshot a web page.** Pick **Screenshot site** from the menu and macshot captures exactly the page you're looking at in your browser — just the content, no tabs or toolbar — straight into the corner, ready to file like any other shot.
 
+**Pin the keepers.** The menu-bar icon holds a gallery of the screenshots you pin — real copies that stick around even if you move or delete the original. Drag any pin out into another app, or click it to open.
+
+**Drag images in from anywhere.** Drag an image onto the menu-bar icon — from Finder, or straight out of a browser, Preview, or Photos. macshot opens as you hover; let go on the icon, or carry on into the pinned section and drop there. Either way it's pinned (files keep their original; raw images are saved as PNG).
+
+**Right-click to copy.** Right-click any pinned shot for **Copy**, **Open**, or **Unpin**. Copy puts the image on the clipboard — image first, so it pastes into chat boxes and editors as a picture — then closes the panel and hands focus back to the app you were in, so you can paste right away.
+
 **It stays on your Mac.** No account, no cloud, no telemetry. macshot moves files on your own disk. Nothing leaves.
 
 ## Install
