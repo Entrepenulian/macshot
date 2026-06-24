@@ -257,39 +257,51 @@ struct PinThumb: View {
 }
 
 /// A drag payload every destination accepts as a real file — Finder, Mail, native apps,
-/// AND browser web drop zones (ChatGPT, Gmail) and other sandboxed apps.
+/// browser web drop zones (ChatGPT, Gmail), AND terminal/Electron targets like CMUX's chat
+/// input. Three things make it universal:
 ///
-/// Two things make this universal:
-///
-/// 1. `NSItemProvider(contentsOf:)` also registers `public.url` / `public.file-url`, which
-///    browsers map to the drag's `text/uri-list` — i.e. a *link* — so a web upload zone that
-///    only reads `dataTransfer.files` sees nothing and the drop silently fails. We register a
-///    single *promised* file representation under the file's concrete type (e.g. `public.png`)
-///    instead, with no URL to misinterpret.
-/// 2. We hand over a throwaway **copy in an unprotected temp dir** rather than the original.
-///    A corner-preview shot lives on the TCC-protected Desktop, which a browser or sandboxed
-///    destination can't read in place — so an in-place hand-off delivers nothing. Copying to
-///    temp (`coordinated: false` → the system owns and cleans up the copy) means the
-///    destination can always read the bytes, wherever the original lives. The original file
-///    is only read, never moved or deleted.
+/// 1. We hand over a **copy in an unprotected temp dir**, never the original. A corner shot
+///    lives on the TCC-protected Desktop, which a browser or sandboxed destination can't read
+///    in place — so an in-place hand-off delivers nothing. The temp copy is readable by
+///    anyone. The original is only read, never moved or deleted.
+/// 2. A *promised file representation* under the concrete type (e.g. `public.png`) — web
+///    upload zones read this into `dataTransfer.files`.
+/// 3. A real `public.file-url` to that temp copy — targets that read a *path* off the drag
+///    (terminals / Electron, like CMUX) need this; (2) alone gives no path. Crucially this is
+///    `public.file-url` (what Finder provides, and browsers accept as a file) — NOT the
+///    generic `public.url`, which browsers would misread as a link and ignore.
 func fileDragProvider(for url: URL) -> NSItemProvider {
+    let src = dragTempCopy(of: url) ?? url
     let provider = NSItemProvider()
     provider.suggestedName = url.lastPathComponent
     let uti = (UTType(filenameExtension: url.pathExtension) ?? .image).identifier
     provider.registerFileRepresentation(forTypeIdentifier: uti, fileOptions: [], visibility: .all) { completion in
-        do {
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("macshot-drag-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let copy = dir.appendingPathComponent(url.lastPathComponent)
-            try FileManager.default.copyItem(at: url, to: copy)
-            completion(copy, false, nil)      // system owns + cleans up the temp copy
-        } catch {
-            completion(url, true, error)       // fall back to reading the original in place
-        }
+        completion(src, true, nil)            // temp copy is unprotected → safe to read in place
+        return nil
+    }
+    provider.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { completion in
+        completion(src.dataRepresentation, nil)   // a real public.file-url (path), not public.url
         return nil
     }
     return provider
+}
+
+/// Copy `url` into an unprotected temp dir so any destination — browser, terminal, sandboxed
+/// app — can read it regardless of where the original lives (e.g. the TCC-protected Desktop).
+/// The original is only read, never moved or deleted; copies from past drags are pruned here.
+private func dragTempCopy(of url: URL) -> URL? {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("macshot-drags", isDirectory: true)
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    if let old = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+        let cutoff = Date().addingTimeInterval(-86_400)   // keep a day; prune older
+        for f in old where ((try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) < cutoff {
+            try? fm.removeItem(at: f)
+        }
+    }
+    let dest = dir.appendingPathComponent(url.lastPathComponent)
+    try? fm.removeItem(at: dest)
+    do { try fm.copyItem(at: url, to: dest); return dest } catch { return nil }
 }
 
 /// macOS 26 Liquid Glass behind the popover; falls back to vibrancy on older systems.
