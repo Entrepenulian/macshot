@@ -12,6 +12,7 @@ final class GalleryModel: ObservableObject {
     var onQuit: () -> Void = {}
     var onUnpin: (URL) -> Void = { _ in }
     var onOpenPin: (URL) -> Void = { _ in }
+    var onCopyPin: (URL) -> Void = { _ in }
 }
 
 /// The menu-bar dropdown: dark vibrant glass, a scrolling 2-column gallery of pinned
@@ -56,7 +57,10 @@ struct GalleryView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(model.pins, id: \.self) { url in
-                    PinThumb(url: url, onUnpin: { model.onUnpin(url) }, onOpen: { model.onOpenPin(url) })
+                    PinThumb(url: url,
+                             onUnpin: { model.onUnpin(url) },
+                             onOpen: { model.onOpenPin(url) },
+                             onCopy: { model.onCopyPin(url) })
                 }
             }
             .padding(.horizontal, 14).padding(.bottom, 14)
@@ -142,6 +146,7 @@ struct PinThumb: View {
     let url: URL
     let onUnpin: () -> Void
     let onOpen: () -> Void
+    let onCopy: () -> Void
     @State private var hover = false
     @State private var image: NSImage?
 
@@ -162,6 +167,14 @@ struct PinThumb: View {
                 .contentShape(Rectangle())
                 .onTapGesture { onOpen() }
                 .onDrag { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
+                // Right-click: copy the image to the clipboard (the headline action),
+                // plus open and unpin for parity with the hover controls.
+                .contextMenu {
+                    Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    Button { onOpen() } label: { Label("Open", systemImage: "arrow.up.forward.app") }
+                    Divider()
+                    Button(role: .destructive) { onUnpin() } label: { Label("Unpin", systemImage: "pin.slash") }
+                }
 
             if hover {
                 Button(action: onUnpin) {

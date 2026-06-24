@@ -94,6 +94,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         galleryModel.onQuit          = { NSApp.terminate(nil) }
         galleryModel.onUnpin         = { [weak self] url in self?.pins.unpin(url); self?.refreshGallery() }
         galleryModel.onOpenPin       = { url in NSWorkspace.shared.open(url) }
+        galleryModel.onCopyPin       = { [weak self] url in self?.copyPinAndDismiss(url) }
+    }
+
+    /// Right-click → Copy on a pinned shot: put it on the clipboard, dismiss the panel,
+    /// and hand focus back to whatever app you were in — so you can paste straight away.
+    private func copyPinAndDismiss(_ url: URL) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        // Image first so it's the primary item (apps that read only item 0 — chat
+        // composers, editors — get the picture); the file URL trails for file-drop targets.
+        var objects: [NSPasteboardWriting] = []
+        if let img = NSImage(contentsOf: url) { objects.append(img) }
+        objects.append(url as NSURL)
+        pb.writeObjects(objects)
+        closePanel()
+        lastActiveApp?.activate(options: [])
     }
 
     // The menu-bar dropdown is a borderless panel pinned flush under the menu bar —
