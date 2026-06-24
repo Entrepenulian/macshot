@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 final class GalleryModel: ObservableObject {
     @Published var pins: [URL] = []
@@ -13,12 +14,15 @@ final class GalleryModel: ObservableObject {
     var onUnpin: (URL) -> Void = { _ in }
     var onOpenPin: (URL) -> Void = { _ in }
     var onCopyPin: (URL) -> Void = { _ in }
+    var onDropFiles: ([URL]) -> Bool = { _ in false }
+    var onDropImages: ([NSImage]) -> Bool = { _ in false }
 }
 
 /// The menu-bar dropdown: dark vibrant glass, a scrolling 2-column gallery of pinned
 /// screenshots on top, and the settings in a footer at the bottom.
 struct GalleryView: View {
     @ObservedObject var model: GalleryModel
+    @State private var dropTargeted = false
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     private let accent = Color(red: 1.0, green: 0.416, blue: 0.102)   // #FF6A1A
@@ -31,11 +35,64 @@ struct GalleryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if model.pins.isEmpty { emptyState } else { grid }
+            pinnedArea
             footer
         }
         .frame(width: 322)
         .modifier(GlassBackground())
+        // The whole panel accepts the drop — release an image anywhere over macshot and
+        // it pins. Forgiving on purpose: you don't have to land exactly on the grid.
+        .onDrop(of: [.image, .fileURL], isTargeted: $dropTargeted) { providers in handleDrop(providers) }
+    }
+
+    // The pinned section is also a drop target: drag image files from Finder (onto the
+    // menu-bar icon, which opens this) and release here to pin them. A dashed accent
+    // ring lights up while a valid drag hovers.
+    private var pinnedArea: some View {
+        Group {
+            if model.pins.isEmpty { emptyState } else { grid }
+        }
+        .overlay(dropHighlight)
+        .animation(.easeOut(duration: 0.12), value: dropTargeted)
+    }
+
+    @ViewBuilder private var dropHighlight: some View {
+        if dropTargeted {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                .padding(8)
+                .transition(.opacity)
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        for provider in providers { load(provider) }
+        return !providers.isEmpty
+    }
+
+    /// Prefer a real file (keeps the original); otherwise pin the raw image data — which
+    /// is how images dragged from browsers, Preview, Photos, etc. arrive.
+    private func load(_ provider: NSItemProvider) {
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, url.isFileURL {
+                    DispatchQueue.main.async { _ = self.model.onDropFiles([url]) }
+                } else {
+                    self.loadImageData(provider)   // a remote URL, not a file → use the data
+                }
+            }
+        } else {
+            loadImageData(provider)
+        }
+    }
+
+    private func loadImageData(_ provider: NSItemProvider) {
+        guard let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) ?? false })
+        else { return }
+        provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+            guard let data, let image = NSImage(data: data) else { return }
+            DispatchQueue.main.async { _ = self.model.onDropImages([image]) }
+        }
     }
 
     private var header: some View {
