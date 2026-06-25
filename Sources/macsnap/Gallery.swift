@@ -26,8 +26,6 @@ final class GalleryModel: ObservableObject {
 struct GalleryView: View {
     @ObservedObject var model: GalleryModel
     @State private var dropTargeted = false
-    @State private var fadeTop = false
-    @State private var fadeBottom = false
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     private let accent = Color(red: 1.0, green: 0.416, blue: 0.102)   // #FF6A1A
@@ -125,18 +123,9 @@ struct GalleryView: View {
                              onCopy: { model.onCopyPin(url) })
                 }
             }
-            .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 14)
+            .padding(.horizontal, 14).padding(.bottom, 14)
         }
         .scrollIndicators(.hidden)
-        // A clean, colorless (alpha-only) fade that's scroll-aware: an edge only
-        // fades once there's content scrolled past it, so nothing fades at rest.
-        .onScrollGeometryChange(for: EdgeFlags.self) { geo in
-            EdgeFlags(
-                top: geo.contentOffset.y > 1,
-                bottom: geo.contentOffset.y < geo.contentSize.height - geo.containerSize.height - 1
-            )
-        } action: { _, flags in fadeTop = flags.top; fadeBottom = flags.bottom }
-        .mask(EdgeFadeMask(fadeTop: fadeTop, fadeBottom: fadeBottom))
         .frame(height: gridHeight)
     }
 
@@ -350,30 +339,6 @@ private func dragTempCopy(of url: URL) -> URL? {
     let dest = dir.appendingPathComponent(url.lastPathComponent)
     try? fm.removeItem(at: dest)
     do { try fm.copyItem(at: url, to: dest); return dest } catch { return nil }
-}
-
-/// Whether each scroll edge has content past it (so it should fade).
-struct EdgeFlags: Equatable { var top: Bool; var bottom: Bool }
-
-/// A colorless, alpha-only mask that softly fades the scroll content at an edge —
-/// but only the edges flagged (i.e. where there's content scrolled past). Pure
-/// transparency: it adds no colour and no material, it just feathers the edge.
-struct EdgeFadeMask: View {
-    let fadeTop: Bool
-    let fadeBottom: Bool
-    private let fade: CGFloat = 26
-
-    var body: some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                .frame(height: fadeTop ? fade : 0)
-            Rectangle().fill(.black)
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: fadeBottom ? fade : 0)
-        }
-        .animation(.easeOut(duration: 0.18), value: fadeTop)
-        .animation(.easeOut(duration: 0.18), value: fadeBottom)
-    }
 }
 
 /// macOS 26 Liquid Glass behind the popover; falls back to vibrancy on older systems.
