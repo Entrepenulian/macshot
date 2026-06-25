@@ -51,6 +51,13 @@ final class ViewerTestController: NSObject, NSApplicationDelegate {
             let out = args[i + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
                 guard let win = NSApp.windows.first(where: { $0 is MediaViewerWindow }) else { exit(1) }
+                if let btn = win.standardWindowButton(.closeButton) {
+                    let h = win.contentView?.bounds.height ?? win.frame.height
+                    let f = btn.convert(btn.bounds, to: nil)
+                    let lightBottomFromTop = h - f.minY
+                    let gap = MediaViewerWindow.inset.top - lightBottomFromTop
+                    NSLog("MACSNAP-MEASURE lightBottomFromTop=\(lightBottomFromTop) mediaTop=\(MediaViewerWindow.inset.top) gap=\(gap)")
+                }
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
                 p.arguments = ["-x", "-o", "-l\(win.windowNumber)", out]
@@ -114,7 +121,7 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
     /// The glass frame around the media. Balanced on all sides; the top carries a
     /// little extra only to clear the traffic lights, kept close to the sides so
     /// the frame reads even.
-    static let inset = NSEdgeInsets(top: 26, left: 22, bottom: 26, right: 22)
+    static let inset = NSEdgeInsets(top: 38, left: 22, bottom: 26, right: 22)
 
     /// Window content size: the media fit into a comfortable box plus the glass frame.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
@@ -145,7 +152,7 @@ struct MediaViewerView: View {
                 case .video(let url): VideoPane(url: url)
                 }
             }
-            .padding(EdgeInsets(top: 26, leading: 22, bottom: 26, trailing: 22))
+            .padding(EdgeInsets(top: 38, leading: 22, bottom: 26, trailing: 22))
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.985)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.45), value: appeared)
