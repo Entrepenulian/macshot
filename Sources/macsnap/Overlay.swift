@@ -170,9 +170,9 @@ final class OverlayController: NSObject {
         model.onPin = { [weak self] in self?.pinAndSlideAway() }
     }
 
-    /// The stack calls this once the card is on screen: starts the idle timer, signals shown.
+    /// The stack calls this once the card is on screen. The card stays put until
+    /// the user acts on it (save / copy / pin / dismiss) — it never times out.
     func didPresent() {
-        scheduleAutoDismiss()
         onShown?()
     }
 
@@ -207,11 +207,6 @@ final class OverlayController: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.onClosed?() }
     }
 
-    private func scheduleAutoDismiss() {
-        let work = DispatchWorkItem { [weak self] in self?.close() }
-        autoDismiss = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
-    }
     private func cancelAutoDismiss() { autoDismiss?.cancel(); autoDismiss = nil }
 
     // MARK: actions
