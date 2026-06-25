@@ -91,7 +91,10 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         isOpaque = false
         hasShadow = true
         delegate = self
-        minSize = NSSize(width: 440, height: 320)
+        // Lock the window to the media's framed aspect ratio so it hugs the media
+        // and the gaps stay put — the window can't be reshaped to a different ratio.
+        contentAspectRatio = content
+        minSize = NSSize(width: max(240, content.width * 0.5), height: max(180, content.height * 0.5))
 
         let root = MediaViewerView(media: media)
         contentView = NSHostingView(rootView: root)
@@ -123,14 +126,26 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
     /// the frame reads even.
     static let inset = NSEdgeInsets(top: 33, left: 5, bottom: 5, right: 5)
 
-    /// Window content size: the media fit into a comfortable box plus the glass frame.
+    /// Window content size = the media (scaled to a comfortable size) plus the
+    /// fixed glass frame. The media is only ever *scaled*, never padded out, so
+    /// the content always carries the media's exact aspect ratio — which means the
+    /// gaps equal the insets for any aspect, wide or tall.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
+        let w = max(pixel.width, 1), h = max(pixel.height, 1)
         let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
         let maxMedia = CGSize(width: screen.width * 0.62, height: screen.height * 0.62)
-        let scale = min(maxMedia.width / pixel.width, maxMedia.height / pixel.height, 1)
-        let media = CGSize(width: pixel.width * scale, height: pixel.height * scale)
-        return CGSize(width: max(440, media.width + inset.left + inset.right),
-                      height: max(320, media.height + inset.top + inset.bottom))
+
+        let fit = min(maxMedia.width / w, maxMedia.height / h)   // scale to fit the box
+        var scale = min(fit, 1)
+        // Don't open too small: scale a small capture up to a comfortable size, but
+        // never past what fits on screen. Scaling keeps the aspect exact.
+        let minLong: CGFloat = 560
+        let longSide = max(w, h) * scale
+        if longSide < minLong { scale = min(fit, minLong / max(w, h)) }
+
+        let media = CGSize(width: w * scale, height: h * scale)
+        return CGSize(width: media.width + inset.left + inset.right,
+                      height: media.height + inset.top + inset.bottom)
     }
 }
 
