@@ -121,7 +121,7 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
     /// The glass frame around the media. Balanced on all sides; the top carries a
     /// little extra only to clear the traffic lights, kept close to the sides so
     /// the frame reads even.
-    static let inset = NSEdgeInsets(top: 38, left: 22, bottom: 26, right: 22)
+    static let inset = NSEdgeInsets(top: 38, left: 5, bottom: 5, right: 5)
 
     /// Window content size: the media fit into a comfortable box plus the glass frame.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
@@ -152,7 +152,7 @@ struct MediaViewerView: View {
                 case .video(let url): VideoPane(url: url)
                 }
             }
-            .padding(EdgeInsets(top: 38, leading: 22, bottom: 26, trailing: 22))
+            .padding(EdgeInsets(top: 38, leading: 5, bottom: 5, trailing: 5))
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.985)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.45), value: appeared)
