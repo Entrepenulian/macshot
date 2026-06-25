@@ -130,14 +130,13 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return (filter, config)
     }
 
-    /// Convert a global (top-left origin) screen rect to the display's local
-    /// top-left coordinate space that `sourceRect` expects.
-    private func displayLocalRect(_ global: CGRect, display: SCDisplay) -> CGRect {
-        guard let screen = nsScreen(for: display) else { return global }
-        // NSScreen frames are bottom-left origin; global rect here is top-left.
-        let originX = global.minX - screen.frame.minX
-        let originY = global.minY - screen.frame.minY
-        return CGRect(x: originX, y: originY, width: global.width, height: global.height).integral
+    /// Convert a global, top-left-origin screen rect (CG coordinates) to the
+    /// display's local top-left space that `sourceRect` expects.
+    private func displayLocalRect(_ globalTopLeft: CGRect, display: SCDisplay) -> CGRect {
+        let bounds = CGDisplayBounds(display.displayID)   // top-left origin, global
+        return CGRect(x: globalTopLeft.minX - bounds.minX,
+                      y: globalTopLeft.minY - bounds.minY,
+                      width: globalTopLeft.width, height: globalTopLeft.height).integral
     }
 
     private func even(_ n: Int) -> Int { n % 2 == 0 ? n : n + 1 }
