@@ -80,6 +80,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         watcher.stop()
     }
 
+    /// macsnap lives in the menu bar — closing a preview window (the red button)
+    /// must only close that window, never quit the whole app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     // MARK: menu bar
 
     private func setupStatusItem() {

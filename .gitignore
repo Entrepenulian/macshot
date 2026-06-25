@@ -13,3 +13,4 @@ macsnap.app/
 
 # The original web mockup (kept locally as a design reference, not part of the app)
 web-prototype/
+macsnap-signing.keychain*

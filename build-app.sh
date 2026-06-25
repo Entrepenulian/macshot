@@ -43,7 +43,7 @@ PLIST
 # their cdhash every build, which silently resets every permission — the whole
 # reason "Screenshot site" kept asking for access it had already been given.
 echo "[4/4] signing with stable identity..."
-SIGN_KC="macsnap-signing.keychain"
+SIGN_KC="$PWD/macsnap-signing.keychain"
 security unlock-keychain -p macsnapsign "${SIGN_KC}" 2>/dev/null || true
 if security find-identity -p codesigning "${SIGN_KC}" 2>/dev/null | grep -q "macsnap Self Sign"; then
   codesign --force --sign "macsnap Self Sign" --keychain "${SIGN_KC}" "${APP}" >/dev/null 2>&1 \
