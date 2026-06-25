@@ -77,6 +77,16 @@ if let i = CommandLine.arguments.firstIndex(of: "--render") {
     exit(0)
 }
 
+// Dev: open the custom viewer on a file (image or video) to preview/iterate its look.
+if let i = CommandLine.arguments.firstIndex(of: "--viewer") {
+    let app = NSApplication.shared
+    let path = (i + 1 < CommandLine.arguments.count) ? CommandLine.arguments[i + 1] : ""
+    let delegate = ViewerTestController(path: path)
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    app.run()
+}
+
 let app = NSApplication.shared
 let delegate: NSApplicationDelegate
 if CommandLine.arguments.contains("--demo") { delegate = DemoController() }

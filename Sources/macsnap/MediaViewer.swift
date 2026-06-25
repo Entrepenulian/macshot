@@ -33,6 +33,33 @@ final class MediaViewerController {
     }
 }
 
+/// Dev-only delegate behind `--viewer <path>`: opens the viewer on one file so
+/// its look can be previewed and iterated without recording.
+final class ViewerTestController: NSObject, NSApplicationDelegate {
+    private let path: String
+    init(path: String) { self.path = path }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let url = URL(fileURLWithPath: path)
+        let isVideo = ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased())
+        MediaViewerController.shared.open(isVideo ? .video(url) : .image(url))
+        NSApp.activate(ignoringOtherApps: true)
+
+        // `--shot <out>`: grab just the viewer window (clean, glass composited) and quit.
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--shot"), i + 1 < args.count {
+            let out = args[i + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) {
+                guard let win = NSApp.windows.first(where: { $0 is MediaViewerWindow }) else { exit(1) }
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                p.arguments = ["-x", "-o", "-l\(win.windowNumber)", out]
+                try? p.run(); p.waitUntilExit()
+                exit(0)
+            }
+        }
+    }
+}
+
 // MARK: - Window
 
 final class MediaViewerWindow: NSWindow, NSWindowDelegate {
@@ -56,8 +83,7 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         isOpaque = false
         hasShadow = true
         delegate = self
-        // Keep the window's own aspect ratio matched to the media so resizing stays true.
-        aspectRatio = content
+        minSize = NSSize(width: 440, height: 320)
 
         let root = MediaViewerView(media: media)
         contentView = NSHostingView(rootView: root)
@@ -84,15 +110,18 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         return CGSize(width: 1280, height: 800)
     }
 
-    /// Window content size: the media fit into a comfortable box plus glass padding.
+    /// The glass frame around the media. Extra at the top so the traffic lights
+    /// sit on the glass, above the media — never over it.
+    static let inset = NSEdgeInsets(top: 54, left: 40, bottom: 40, right: 40)
+
+    /// Window content size: the media fit into a comfortable box plus the glass frame.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
         let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
-        let maxMedia = CGSize(width: screen.width * 0.7, height: screen.height * 0.72)
+        let maxMedia = CGSize(width: screen.width * 0.66, height: screen.height * 0.66)
         let scale = min(maxMedia.width / pixel.width, maxMedia.height / pixel.height, 1)
         let media = CGSize(width: pixel.width * scale, height: pixel.height * scale)
-        let pad: CGFloat = 24
-        return CGSize(width: max(420, media.width + pad * 2),
-                      height: max(300, media.height + pad * 2))
+        return CGSize(width: max(440, media.width + inset.left + inset.right),
+                      height: max(320, media.height + inset.top + inset.bottom))
     }
 }
 
@@ -104,8 +133,9 @@ struct MediaViewerView: View {
 
     var body: some View {
         ZStack {
-            // Liquid Glass fills the whole window — the media floats on top of it.
-            Color.clear.modifier(ViewerGlass())
+            // Grey-tinted Liquid Glass fills the whole window so the frame reads as a
+            // soft neutral panel (like the reference) on any backdrop.
+            Color.clear.modifier(WindowGlass()).ignoresSafeArea()
 
             Group {
                 switch media {
@@ -113,7 +143,7 @@ struct MediaViewerView: View {
                 case .video(let url): VideoPane(url: url)
                 }
             }
-            .padding(24)
+            .padding(EdgeInsets(top: 54, leading: 40, bottom: 40, trailing: 40))
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.985)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.45), value: appeared)
@@ -189,11 +219,14 @@ private struct VideoPane: View {
     @StateObject private var model: PlayerModel
     @State private var hovering = false
     @State private var savingGIF = false
+    @State private var intro = true     // controls greet on open, then auto-hide
 
     init(url: URL) {
         self.url = url
         _model = StateObject(wrappedValue: PlayerModel(url: url))
     }
+
+    private var controlsVisible: Bool { hovering || !model.isPlaying || intro }
 
     var body: some View {
         MediaFrame(aspect: model.aspect) {
@@ -204,13 +237,15 @@ private struct VideoPane: View {
         .overlay(alignment: .bottom) {
             controls
                 .padding(14)
-                .opacity(hovering || !model.isPlaying ? 1 : 0)
-                .offset(y: (hovering || !model.isPlaying) ? 0 : 8)
-                .animation(.easeOut(duration: 0.2), value: hovering)
-                .animation(.easeOut(duration: 0.2), value: model.isPlaying)
+                .opacity(controlsVisible ? 1 : 0)
+                .offset(y: controlsVisible ? 0 : 8)
+                .animation(.easeOut(duration: 0.22), value: controlsVisible)
         }
         .onHover { hovering = $0 }
-        .onAppear { model.play() }
+        .onAppear {
+            model.play()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { intro = false }
+        }
         .onDisappear { model.pause() }
     }
 
@@ -400,6 +435,19 @@ struct ViewerGlass: ViewModifier {
             content.glassEffect(.regular, in: shape)
         } else {
             content.background(.ultraThinMaterial, in: shape)
+        }
+    }
+}
+
+/// The window backdrop: Liquid Glass tinted toward a neutral grey so the frame
+/// around the media is a consistent soft panel rather than near-black.
+struct WindowGlass: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.tint(Color(white: 0.46).opacity(0.92)), in: Rectangle())
+        } else {
+            content.background(Color(white: 0.34)).background(.ultraThinMaterial)
         }
     }
 }
