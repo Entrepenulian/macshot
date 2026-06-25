@@ -161,7 +161,7 @@ struct GalleryView: View {
             ActionRow(icon: "macwindow", title: "Screenshot site", action: model.onScreenshotSite)
             ActionRow(icon: model.isRecording ? "stop.circle.fill" : "record.circle",
                       title: model.isRecording ? "Stop recording" : "Record",
-                      tint: model.isRecording ? accent : nil,
+                      tint: model.isRecording ? .red : nil,
                       action: model.onRecord)
             ActionRow(icon: "clock.arrow.circlepath", title: "Catch latest screenshot", action: model.onCatchLatest)
             ActionRow(icon: "folder", title: "Open screenshot folder", action: model.onOpenFolder)

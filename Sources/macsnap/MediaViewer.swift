@@ -111,9 +111,9 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         return CGSize(width: 1280, height: 800)
     }
 
-    /// The glass frame around the media. Extra at the top so the traffic lights
-    /// sit on the glass, above the media — never over it.
-    static let inset = NSEdgeInsets(top: 54, left: 40, bottom: 40, right: 40)
+    /// The glass frame around the media. A thin, even border, with just enough
+    /// at the top to clear the traffic lights.
+    static let inset = NSEdgeInsets(top: 30, left: 13, bottom: 13, right: 13)
 
     /// Window content size: the media fit into a comfortable box plus the glass frame.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
@@ -144,7 +144,7 @@ struct MediaViewerView: View {
                 case .video(let url): VideoPane(url: url)
                 }
             }
-            .padding(EdgeInsets(top: 54, leading: 40, bottom: 40, trailing: 40))
+            .padding(EdgeInsets(top: 30, leading: 13, bottom: 13, trailing: 13))
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.985)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.45), value: appeared)
@@ -245,22 +245,18 @@ private struct VideoPane: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
-            iconButton("doc.on.doc", "Copy") { copyFile() }
-            iconButton(savingGIF ? "hourglass" : "square.stack.3d.down.right", "Save GIF") { saveGIF() }
+            GlassIconButton(icon: "doc.on.doc", help: "Copy") { copyFile() }
+            GlassIconButton(icon: savingGIF ? "hourglass" : "square.stack.3d.down.right",
+                            help: "Save GIF") { saveGIF() }
                 .disabled(savingGIF)
-            iconButton("folder", "Reveal") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            GlassIconButton(icon: "folder", help: "Reveal") {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
         }
         .padding(5)
-        .modifier(ViewerGlass(corner: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.1)))
-    }
-
-    private func iconButton(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.85)).frame(width: 26, height: 26)
-        }
-        .buttonStyle(.plain).help(help)
+        .modifier(ViewerGlass(corner: 15))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(.white.opacity(0.16)))
+        .shadow(color: .black.opacity(0.32), radius: 16, y: 6)
     }
 
     private func copyFile() {
@@ -325,22 +321,50 @@ private struct ActionBar: View {
     let items: [Item]
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(items) { item in
-                Button(action: item.action) {
-                    HStack(spacing: 6) {
-                        Image(systemName: item.icon).font(.system(size: 12, weight: .medium))
-                        Text(item.title).font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                }
-                .buttonStyle(.plain)
-            }
+        HStack(spacing: 2) {
+            ForEach(items) { item in ActionLabelButton(item: item) }
         }
         .padding(4)
         .modifier(ViewerGlass(corner: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.1)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.16)))
+        .shadow(color: .black.opacity(0.32), radius: 16, y: 6)
+    }
+}
+
+private struct ActionLabelButton: View {
+    let item: ActionBar.Item
+    @State private var hover = false
+    var body: some View {
+        Button(action: item.action) {
+            HStack(spacing: 6) {
+                Image(systemName: item.icon).font(.system(size: 12.5, weight: .semibold))
+                Text(item.title).font(.system(size: 12.5, weight: .medium))
+            }
+            .foregroundStyle(.white.opacity(hover ? 1 : 0.86))
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Capsule().fill(.white.opacity(hover ? 0.13 : 0)))
+        }
+        .buttonStyle(.plain).onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover)
+    }
+}
+
+/// An icon-only glass button (used on the video, top-right).
+private struct GlassIconButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(hover ? 1 : 0.88))
+                .frame(width: 28, height: 28)
+                .background(Capsule().fill(.white.opacity(hover ? 0.14 : 0)))
+        }
+        .buttonStyle(.plain).help(help)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover)
     }
 }
 
@@ -358,15 +382,14 @@ struct ViewerGlass: ViewModifier {
     }
 }
 
-/// The window backdrop: Liquid Glass tinted toward a neutral grey so the frame
-/// around the media is a consistent soft panel rather than near-black.
+/// The window backdrop: the clearest native Liquid Glass, so the frame around
+/// the media is true see-through glass rather than a flat panel.
 struct WindowGlass: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content
-                .glassEffect(.regular.tint(Color(white: 0.46).opacity(0.92)), in: Rectangle())
+            content.glassEffect(.clear, in: Rectangle())
         } else {
-            content.background(Color(white: 0.34)).background(.ultraThinMaterial)
+            content.background(.ultraThinMaterial)
         }
     }
 }

@@ -98,7 +98,7 @@ final class SelectionCanvas: NSView {
     private var hoverWindow: SCWindow?
     private var toolbar: NSHostingView<SelectionToolbar>?
 
-    private let accent = NSColor(srgbRed: 1.0, green: 0.416, blue: 0.102, alpha: 1)
+    private let accent = NSColor.white
 
     init(screen: NSScreen, display: SCDisplay, windows: [SCWindow]) {
         self.screen = screen
@@ -256,39 +256,57 @@ struct SelectionToolbar: View {
     var onMode: (RecordSelectionController.Mode) -> Void
     var onCancel: () -> Void
 
-    private let accent = Color(red: 1.0, green: 0.416, blue: 0.102)
-
     var body: some View {
-        HStack(spacing: 6) {
-            pill("Area", "rectangle.dashed", .area)
-            pill("Window", "macwindow", .window)
-            pill("Screen", "display", .screen)
-            Divider().frame(height: 22).overlay(Color.white.opacity(0.12))
-            Button(action: onCancel) {
-                Text("Cancel").font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-            }
-            .buttonStyle(.plain)
+        HStack(spacing: 3) {
+            SelectionPill(title: "Area", icon: "rectangle.dashed", on: mode == .area) { onMode(.area) }
+            SelectionPill(title: "Window", icon: "macwindow", on: mode == .window) { onMode(.window) }
+            SelectionPill(title: "Screen", icon: "display", on: mode == .screen) { onMode(.screen) }
+
+            Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 26).padding(.horizontal, 5)
+
+            SelectionPill(title: "Cancel", icon: nil, on: false, action: onCancel)
         }
-        .padding(6)
-        .modifier(GlassBackground())
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(.white.opacity(0.08)))
+        .padding(7)
+        .modifier(ToolbarGlass())
+        .shadow(color: .black.opacity(0.4), radius: 26, y: 10)
         .fixedSize()
     }
+}
 
-    @ViewBuilder
-    private func pill(_ title: String, _ icon: String, _ m: RecordSelectionController.Mode) -> some View {
-        let on = mode == m
-        Button { onMode(m) } label: {
+/// One pill in the selection toolbar. Active = solid white with dark text for a
+/// crisp, confident state; inactive lifts on hover.
+private struct SelectionPill: View {
+    let title: String
+    let icon: String?
+    let on: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 12, weight: .semibold))
-                Text(title).font(.system(size: 12.5, weight: .medium))
+                if let icon { Image(systemName: icon).font(.system(size: 12.5, weight: .semibold)) }
+                Text(title).font(.system(size: 13, weight: .medium))
             }
-            .foregroundStyle(on ? .white : .white.opacity(0.7))
-            .padding(.horizontal, 13).padding(.vertical, 7)
-            .background(Capsule().fill(on ? accent.opacity(0.9) : .white.opacity(0.001)))
+            .foregroundStyle(on ? Color.black : .white.opacity(hover ? 1 : 0.82))
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Capsule().fill(on ? Color.white : .white.opacity(hover ? 0.14 : 0)))
         }
         .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover)
+    }
+}
+
+/// A defined clear-glass capsule for the floating selection toolbar.
+private struct ToolbarGlass: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
+        }
     }
 }
