@@ -8,6 +8,7 @@ final class RecordingController {
 
     private let recorder = ScreenRecorder()
     private let selection = RecordSelectionController()
+    private let border = RecordingBorderOverlay()
 
     private(set) var isRecording = false
 
@@ -57,6 +58,7 @@ final class RecordingController {
         recorder.onFinish = { [weak self] finished in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.border.hide()
                 self.isRecording = false
                 self.onStateChange?()
                 if let finished { self.save(finished) }
@@ -66,14 +68,26 @@ final class RecordingController {
         do {
             try await recorder.start(target: target, to: url)
             isRecording = true
+            showBorder(for: target)
             onStateChange?()
         } catch {
             NSLog("macsnap: recording failed to start — \(error.localizedDescription)")
         }
     }
 
+    /// Outline the recorded region for the duration of the recording. The full
+    /// display needs no outline (it's obvious what's captured).
+    private func showBorder(for target: RecordTarget) {
+        switch target {
+        case .area(_, let globalRect): border.show(globalTopLeft: globalRect)
+        case .window(let w):           border.show(globalTopLeft: w.frame)
+        case .display:                 break
+        }
+    }
+
     func stop() {
         guard isRecording else { return }
+        border.hide()
         recorder.stop()
     }
 

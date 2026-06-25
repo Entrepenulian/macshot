@@ -141,7 +141,7 @@ final class SelectionCanvas: NSView {
         addSubview(tb)
         NSLayoutConstraint.activate([
             tb.centerXAnchor.constraint(equalTo: centerXAnchor),
-            tb.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -46),
+            tb.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -104),   // clear of the Dock
         ])
         toolbar = tb
         // Rebuild cursor rects once the toolbar has a real frame.
