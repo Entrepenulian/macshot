@@ -316,47 +316,24 @@ private struct VideoPane: View {
 
 }
 
-/// The native AVKit player. Its floating transport IS the system's own
-/// Liquid-Glass media controls. The control pill anchors to the bottom of the
-/// `AVPlayerView`, so insetting that view's bottom by `controlsLift` raises the
-/// pill by the same amount; the video keeps filling via `resizeAspectFill`.
+/// The native AVKit player with the modern inline Liquid-Glass transport. Uses
+/// `resizeAspect` so the full media is shown — never cropped on any edge. The
+/// player fills the framed area exactly (the window is sized to the media's
+/// aspect), so the inline controls overlay the bottom of the media with no
+/// letterbox and no crop.
 private struct AVKitPlayerView: NSViewRepresentable {
     let player: AVPlayer
-    var controlsLift: CGFloat = 14
 
-    func makeNSView(context: Context) -> LiftedPlayerView {
-        let v = LiftedPlayerView()
-        v.lift = controlsLift
-        v.playerView.player = player
+    func makeNSView(context: Context) -> AVPlayerView {
+        let v = AVPlayerView()
+        v.player = player
+        v.controlsStyle = .inline
+        v.videoGravity = .resizeAspect
+        v.allowsPictureInPicturePlayback = true
+        v.showsFullScreenToggleButton = false
         return v
     }
-    func updateNSView(_ nsView: LiftedPlayerView, context: Context) {
-        nsView.playerView.player = player
-        nsView.lift = controlsLift
-        nsView.needsLayout = true
-    }
-}
-
-/// Hosts an `AVPlayerView` inset at the bottom so the floating control pill sits
-/// a few points higher than the media's bottom edge.
-final class LiftedPlayerView: NSView {
-    let playerView = AVPlayerView()
-    var lift: CGFloat = 14
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        playerView.controlsStyle = .inline            // the modern integrated Liquid-Glass bar
-        playerView.videoGravity = .resizeAspectFill   // fill despite the bottom inset
-        playerView.allowsPictureInPicturePlayback = true
-        playerView.showsFullScreenToggleButton = false
-        addSubview(playerView)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        playerView.frame = NSRect(x: 0, y: lift, width: bounds.width, height: bounds.height - lift)
-    }
+    func updateNSView(_ nsView: AVPlayerView, context: Context) { nsView.player = player }
 }
 
 /// Holds the player, the media aspect (for the glass frame), and a GIF-style loop.
