@@ -110,6 +110,10 @@ final class SelectionCanvas: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var acceptsFirstResponder: Bool { true }
+    // macsnap is a menu-bar (accessory) app, so this overlay panel is often not the
+    // key window. Without this, the first mouse-down is swallowed to activate the
+    // window instead of starting the drag — so the area selection "just clicked".
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
         // The toolbar is for clicking, not aiming — show the normal arrow over it
