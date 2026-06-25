@@ -8,7 +8,6 @@ final class RecordingController {
 
     private let recorder = ScreenRecorder()
     private let selection = RecordSelectionController()
-    private let border = RecordingBorderOverlay()
 
     private(set) var isRecording = false
 
@@ -42,9 +41,8 @@ final class RecordingController {
                 let content = try await ScreenRecorder.shareableContent()
                 selection.begin(content: content) { [weak self] target in
                     guard let self, let target else { return }   // nil = cancelled
-                    // Put the recording dim up immediately (synchronously, before the
-                    // selection overlay is torn down) so the transition never flickers.
-                    self.showBorder(for: target)
+                    // The selection overlay has already switched itself into recording
+                    // mode (same window, dim untouched) — just start the recorder.
                     Task { @MainActor in await self.begin(target) }
                 }
             } catch {
@@ -61,7 +59,7 @@ final class RecordingController {
         recorder.onFinish = { [weak self] finished in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.border.hide()
+                self.selection.tearDownRecordingOverlay()   // remove the dim window
                 self.isRecording = false
                 self.onStateChange?()
                 if let finished { self.save(finished) }
@@ -70,32 +68,21 @@ final class RecordingController {
 
         do {
             try await recorder.start(target: target, to: url)
-            // The dim is already up (shown synchronously on selection); just flip
+            // The dim is the same window from selection (already up); just flip
             // state + status item on the main thread.
             await MainActor.run {
                 self.isRecording = true
                 self.onStateChange?()
             }
         } catch {
-            await MainActor.run { self.border.hide() }   // failed to start — clear the dim
+            await MainActor.run { self.selection.tearDownRecordingOverlay() }   // failed — clear the dim
             NSLog("macsnap: recording failed to start — \(error.localizedDescription)")
-        }
-    }
-
-    /// Outline the recorded region for the duration of the recording. The full
-    /// display needs no outline (it's obvious what's captured).
-    private func showBorder(for target: RecordTarget) {
-        switch target {
-        case .area(_, let globalRect): border.show(globalTopLeft: globalRect)
-        case .window(let w):           border.show(globalTopLeft: w.frame)
-        case .display:                 break
         }
     }
 
     func stop() {
         guard isRecording else { return }
-        border.hide()
-        recorder.stop()
+        recorder.stop()   // its onFinish removes the dim window
     }
 
     private func save(_ temp: URL) {

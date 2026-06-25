@@ -34,12 +34,21 @@ final class RecordSelectionController {
     }
 
     private func finish(_ target: RecordTarget?) {
-        // Run the completion FIRST (it puts the recording dim up for a valid
-        // target), THEN remove the selection overlay — so there's no frame where
-        // neither dim is on screen (which caused a flicker on release).
         let done = completion
         completion = nil
+        if target != nil {
+            // Keep the SAME window and just switch it to recording mode — the dim
+            // never moves, shifts, or flashes; only the toolbar + border drop away.
+            panel?.enterRecordingMode()
+        } else {
+            panel?.dismiss()
+            panel = nil
+        }
         done?(target)
+    }
+
+    /// Remove the lingering recording-dim window when recording ends.
+    func tearDownRecordingOverlay() {
         panel?.dismiss()
         panel = nil
     }
@@ -85,7 +94,16 @@ final class SelectionPanel: NSPanel {
     }
 
     func dismiss() { orderOut(nil) }
+
+    /// Switch this same window into recording mode: it stays up as the dim, but
+    /// becomes click-through and drops its toolbar + selection border.
+    func enterRecordingMode() {
+        ignoresMouseEvents = true
+        canvas.enterRecordingMode()
+    }
 }
+
+
 
 // MARK: - Canvas
 
@@ -100,6 +118,7 @@ final class SelectionCanvas: NSView {
     private var dragRect: NSRect?            // in view coords, live during a drag
     private var hoverWindow: SCWindow?
     private var toolbar: NSHostingView<SelectionToolbar>?
+    private var recording = false           // after release: keep the dim, drop the chrome
 
     private let accent = NSColor.white
 
@@ -156,6 +175,16 @@ final class SelectionCanvas: NSView {
             guard let self else { return }
             self.window?.invalidateCursorRects(for: self)
         }
+    }
+
+    /// Keep the exact same dim (and the same clear hole) but drop the toolbar and
+    /// the selection border — so when the user releases, nothing about the dimmed
+    /// layer moves or flashes.
+    func enterRecordingMode() {
+        recording = true
+        toolbar?.removeFromSuperview()
+        toolbar = nil
+        needsDisplay = true
     }
 
     private func setMode(_ m: RecordSelectionController.Mode) {
@@ -243,6 +272,9 @@ final class SelectionCanvas: NSView {
         ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
         ctx.fillPath()
         ctx.setBlendMode(.normal)
+
+        // Once recording, keep only the dim + clear hole — no border, no dimensions.
+        guard !recording else { return }
 
         ctx.setStrokeColor(accent.cgColor)
         ctx.setLineWidth(2)
