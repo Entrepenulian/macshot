@@ -47,6 +47,7 @@ final class RecordSelectionController {
         done?(target)
     }
 
+
     /// Remove the lingering recording-dim window when recording ends.
     func tearDownRecordingOverlay() {
         panel?.dismiss()
@@ -104,7 +105,6 @@ final class SelectionPanel: NSPanel {
 }
 
 
-
 // MARK: - Canvas
 
 final class SelectionCanvas: NSView {
@@ -137,7 +137,8 @@ final class SelectionCanvas: NSView {
     // window instead of starting the drag — so the area selection "just clicked".
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
+        // Crosshair to drag an area; a pointing hand to click a window or the screen.
+        addCursorRect(bounds, cursor: mode == .area ? .crosshair : .pointingHand)
         // The toolbar is for clicking, not aiming — show the normal arrow over it
         // (its buttons switch to the pointing hand on hover).
         if let tb = toolbar, tb.frame.width > 1 { addCursorRect(tb.frame, cursor: .arrow) }
@@ -187,11 +188,33 @@ final class SelectionCanvas: NSView {
         needsDisplay = true
     }
 
+
     private func setMode(_ m: RecordSelectionController.Mode) {
         mode = m
         dragRect = nil; dragStart = nil; hoverWindow = nil
+        // In window mode, highlight the window under the cursor right away (don't
+        // wait for the first move) so switching to Window instantly shows a target.
+        if m == .window { refreshHoverWindow() }
         rebuildToolbar()
+        window?.invalidateCursorRects(for: self)   // crosshair ↔ pointing hand
         needsDisplay = true
+    }
+
+    /// Window under the current mouse location, front-to-back; updates the hover.
+    private func refreshHoverWindow() {
+        guard let win = window else { return }
+        let viewPoint = convert(win.mouseLocationOutsideOfEventStream, from: nil)
+        let global = toGlobalTopLeft(viewPoint)
+        hoverWindow = windows.first { $0.frame.contains(global) }
+    }
+
+    // A whole-screen tracking area so mouse-moved (window hover) fires reliably.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
     }
 
     private func rebuildToolbar() {
@@ -252,37 +275,42 @@ final class SelectionCanvas: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        // Dim the whole screen.
+        // Screen mode targets the whole display. While choosing, a soft, even dim
+        // (no border) says "click to capture the screen"; once recording, it's fully
+        // clear so the capture is clean.
+        if mode == .screen {
+            if !recording {
+                ctx.setFillColor(NSColor.black.withAlphaComponent(0.20).cgColor)
+                ctx.fill(bounds)
+            }
+            return
+        }
+
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.28).cgColor)
         ctx.fill(bounds)
 
-        // The clear "hole" + accent frame for the current selection/highlight.
-        var hole: NSRect?
-        switch mode {
-        case .area:    hole = dragRect
-        case .screen:  hole = bounds
-        case .window:  hole = hoverWindow.map { toView($0.frame) }
-        }
-
+        let hole: NSRect? = (mode == .area) ? dragRect : hoverWindow.map { toView($0.frame) }
         guard let r = hole, r.width > 1, r.height > 1 else { return }
 
+        // Clear the target with softly rounded corners.
         let radius: CGFloat = 8
-        // Clear a rounded hole so the selection has softly rounded corners.
         ctx.setBlendMode(.clear)
         ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
         ctx.fillPath()
         ctx.setBlendMode(.normal)
 
-        // Once recording, keep only the dim + clear hole — no border, no dimensions.
         guard !recording else { return }
 
-        ctx.setStrokeColor(accent.cgColor)
-        ctx.setLineWidth(2)
-        ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1),
-                           cornerWidth: radius, cornerHeight: radius, transform: nil))
-        ctx.strokePath()
-
-        if mode == .area { drawDimensions(r, ctx: ctx) }
+        // A thin guide only for the area drag — never a border around a window or
+        // the whole screen.
+        if mode == .area {
+            ctx.setStrokeColor(accent.cgColor)
+            ctx.setLineWidth(2)
+            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1),
+                               cornerWidth: radius, cornerHeight: radius, transform: nil))
+            ctx.strokePath()
+            drawDimensions(r, ctx: ctx)
+        }
     }
 
     private func drawDimensions(_ r: NSRect, ctx: CGContext) {
