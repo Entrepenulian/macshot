@@ -34,11 +34,14 @@ final class RecordSelectionController {
     }
 
     private func finish(_ target: RecordTarget?) {
-        panel?.dismiss()
-        panel = nil
+        // Run the completion FIRST (it puts the recording dim up for a valid
+        // target), THEN remove the selection overlay — so there's no frame where
+        // neither dim is on screen (which caused a flicker on release).
         let done = completion
         completion = nil
         done?(target)
+        panel?.dismiss()
+        panel = nil
     }
 }
 
@@ -234,13 +237,18 @@ final class SelectionCanvas: NSView {
 
         guard let r = hole, r.width > 1, r.height > 1 else { return }
 
+        let radius: CGFloat = 8
+        // Clear a rounded hole so the selection has softly rounded corners.
         ctx.setBlendMode(.clear)
-        ctx.fill(r)
+        ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.fillPath()
         ctx.setBlendMode(.normal)
 
         ctx.setStrokeColor(accent.cgColor)
         ctx.setLineWidth(2)
-        ctx.stroke(r.insetBy(dx: 1, dy: 1))
+        ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1),
+                           cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.strokePath()
 
         if mode == .area { drawDimensions(r, ctx: ctx) }
     }

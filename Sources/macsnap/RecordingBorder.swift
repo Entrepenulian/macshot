@@ -64,6 +64,10 @@ private final class DimView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.28).cgColor)
         ctx.fill(bounds)
-        ctx.clear(hole)               // punch the region clear → it shows true colours
+        // Punch the region clear with softly rounded corners (matches the selection).
+        ctx.setBlendMode(.clear)
+        ctx.addPath(CGPath(roundedRect: hole, cornerWidth: 8, cornerHeight: 8, transform: nil))
+        ctx.fillPath()
+        ctx.setBlendMode(.normal)
     }
 }

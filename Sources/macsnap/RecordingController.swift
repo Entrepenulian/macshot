@@ -42,6 +42,9 @@ final class RecordingController {
                 let content = try await ScreenRecorder.shareableContent()
                 selection.begin(content: content) { [weak self] target in
                     guard let self, let target else { return }   // nil = cancelled
+                    // Put the recording dim up immediately (synchronously, before the
+                    // selection overlay is torn down) so the transition never flickers.
+                    self.showBorder(for: target)
                     Task { @MainActor in await self.begin(target) }
                 }
             } catch {
@@ -67,13 +70,14 @@ final class RecordingController {
 
         do {
             try await recorder.start(target: target, to: url)
-            // All UI (status item, the region border) must touch the main thread.
+            // The dim is already up (shown synchronously on selection); just flip
+            // state + status item on the main thread.
             await MainActor.run {
                 self.isRecording = true
-                self.showBorder(for: target)
                 self.onStateChange?()
             }
         } catch {
+            await MainActor.run { self.border.hide() }   // failed to start — clear the dim
             NSLog("macsnap: recording failed to start — \(error.localizedDescription)")
         }
     }
