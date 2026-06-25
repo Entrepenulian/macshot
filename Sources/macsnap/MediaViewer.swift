@@ -78,7 +78,8 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         self.mediaURL = media.url
 
         let pixel = MediaViewerWindow.pixelSize(of: media)
-        let content = MediaViewerWindow.fittedContentSize(for: pixel)
+        let minMediaW = media.isVideo ? MediaViewerWindow.minVideoMediaWidth : 0
+        let content = MediaViewerWindow.fittedContentSize(for: pixel, minMediaWidth: minMediaW)
 
         super.init(contentRect: NSRect(origin: .zero, size: content),
                    styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -97,7 +98,11 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         // Lock the window to the media's framed aspect ratio so it hugs the media
         // and the gaps stay put — the window can't be reshaped to a different ratio.
         contentAspectRatio = content
-        minSize = NSSize(width: max(240, content.width * 0.5), height: max(180, content.height * 0.5))
+        // Floor the resize so the inline controls can't be squashed: for video, the
+        // window can't go narrower than the controls need (height follows the lock).
+        let floorW = media.isVideo ? minMediaW + MediaViewerWindow.inset.left + MediaViewerWindow.inset.right
+                                   : max(240, content.width * 0.5)
+        minSize = NSSize(width: floorW, height: floorW * content.height / content.width)
 
         let root = MediaViewerView(media: media)
         contentView = NSHostingView(rootView: root)
@@ -133,7 +138,11 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
     /// fixed glass frame. The media is only ever *scaled*, never padded out, so
     /// the content always carries the media's exact aspect ratio — which means the
     /// gaps equal the insets for any aspect, wide or tall.
-    private static func fittedContentSize(for pixel: CGSize) -> CGSize {
+    /// The narrowest the media may be drawn so the inline video controls (skip /
+    /// play / scrubber / time / AirPlay / PiP) never get squashed.
+    static let minVideoMediaWidth: CGFloat = 460
+
+    private static func fittedContentSize(for pixel: CGSize, minMediaWidth: CGFloat = 0) -> CGSize {
         let w = max(pixel.width, 1), h = max(pixel.height, 1)
         let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
         let maxMedia = CGSize(width: screen.width * 0.62, height: screen.height * 0.62)
@@ -145,6 +154,9 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         let minLong: CGFloat = 560
         let longSide = max(w, h) * scale
         if longSide < minLong { scale = min(fit, minLong / max(w, h)) }
+        // Videos: never narrower than the controls need (overrides the fit cap so a
+        // tall clip still opens wide enough to show the full transport bar).
+        if minMediaWidth > 0, w * scale < minMediaWidth { scale = minMediaWidth / w }
 
         let media = CGSize(width: w * scale, height: h * scale)
         return CGSize(width: media.width + inset.left + inset.right,
@@ -305,19 +317,46 @@ private struct VideoPane: View {
 }
 
 /// The native AVKit player. Its floating transport IS the system's own
-/// Liquid-Glass media controls — we only supply the player and the glass frame.
+/// Liquid-Glass media controls. The control pill anchors to the bottom of the
+/// `AVPlayerView`, so insetting that view's bottom by `controlsLift` raises the
+/// pill by the same amount; the video keeps filling via `resizeAspectFill`.
 private struct AVKitPlayerView: NSViewRepresentable {
     let player: AVPlayer
-    func makeNSView(context: Context) -> AVPlayerView {
-        let v = AVPlayerView()
-        v.player = player
-        v.controlsStyle = .floating
-        v.videoGravity = .resizeAspect
-        v.allowsPictureInPicturePlayback = true
-        v.showsFullScreenToggleButton = false
+    var controlsLift: CGFloat = 14
+
+    func makeNSView(context: Context) -> LiftedPlayerView {
+        let v = LiftedPlayerView()
+        v.lift = controlsLift
+        v.playerView.player = player
         return v
     }
-    func updateNSView(_ nsView: AVPlayerView, context: Context) { nsView.player = player }
+    func updateNSView(_ nsView: LiftedPlayerView, context: Context) {
+        nsView.playerView.player = player
+        nsView.lift = controlsLift
+        nsView.needsLayout = true
+    }
+}
+
+/// Hosts an `AVPlayerView` inset at the bottom so the floating control pill sits
+/// a few points higher than the media's bottom edge.
+final class LiftedPlayerView: NSView {
+    let playerView = AVPlayerView()
+    var lift: CGFloat = 14
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        playerView.controlsStyle = .inline            // the modern integrated Liquid-Glass bar
+        playerView.videoGravity = .resizeAspectFill   // fill despite the bottom inset
+        playerView.allowsPictureInPicturePlayback = true
+        playerView.showsFullScreenToggleButton = false
+        addSubview(playerView)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        playerView.frame = NSRect(x: 0, y: lift, width: bounds.width, height: bounds.height - lift)
+    }
 }
 
 /// Holds the player, the media aspect (for the glass frame), and a GIF-style loop.
