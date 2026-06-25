@@ -21,10 +21,16 @@ final class RecordSelectionController {
                 ?? content.displays.first else { completion(nil); return }
         self.completion = completion
 
-        // Front-to-back windows on this display, skipping our own and tiny chrome.
+        // Real, front-to-back app windows only. windowLayer == 0 is the normal
+        // window layer — this drops the Dock, menu bar, wallpaper and other system
+        // surfaces (the Dock in particular spans the whole screen and would "match"
+        // every hover, so the highlight looked like it did nothing).
         let windows = content.windows.filter {
-            $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
-                && $0.frame.width > 40 && $0.frame.height > 40 && $0.isOnScreen
+            $0.windowLayer == 0
+                && $0.isOnScreen
+                && $0.frame.width > 60 && $0.frame.height > 60
+                && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
+                && $0.owningApplication?.bundleIdentifier != "com.apple.dock"
         }
 
         let panel = SelectionPanel(screen: screen, display: display, windows: windows)
@@ -119,6 +125,7 @@ final class SelectionCanvas: NSView {
     private var hoverWindow: SCWindow?
     private var toolbar: NSHostingView<SelectionToolbar>?
     private var recording = false           // after release: keep the dim, drop the chrome
+    private var hoverTimer: Timer?          // polls the pointer for window-hover highlight
 
     private let accent = NSColor.white
 
@@ -183,38 +190,51 @@ final class SelectionCanvas: NSView {
     /// layer moves or flashes.
     func enterRecordingMode() {
         recording = true
+        stopHoverPolling()
         toolbar?.removeFromSuperview()
         toolbar = nil
         needsDisplay = true
     }
 
+    deinit { hoverTimer?.invalidate() }
+
 
     private func setMode(_ m: RecordSelectionController.Mode) {
         mode = m
         dragRect = nil; dragStart = nil; hoverWindow = nil
-        // In window mode, highlight the window under the cursor right away (don't
-        // wait for the first move) so switching to Window instantly shows a target.
-        if m == .window { refreshHoverWindow() }
+        // Window hover can't rely on mouseMoved (a borderless, non-key panel often
+        // never gets it). Poll the mouse position on a timer instead — bulletproof.
+        if m == .window { startHoverPolling() } else { stopHoverPolling() }
         rebuildToolbar()
         window?.invalidateCursorRects(for: self)   // crosshair ↔ pointing hand
         needsDisplay = true
     }
 
-    /// Window under the current mouse location, front-to-back; updates the hover.
+    private func startHoverPolling() {
+        stopHoverPolling()
+        refreshHoverWindow()
+        let t = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in self?.refreshHoverWindow() }
+        RunLoop.main.add(t, forMode: .common)
+        hoverTimer = t
+    }
+    private func stopHoverPolling() { hoverTimer?.invalidate(); hoverTimer = nil }
+
+    /// The window under the current mouse location (front-to-back). Reads the live
+    /// pointer position directly, so it works without any mouse-moved events.
     private func refreshHoverWindow() {
-        guard let win = window else { return }
-        let viewPoint = convert(win.mouseLocationOutsideOfEventStream, from: nil)
-        let global = toGlobalTopLeft(viewPoint)
-        hoverWindow = windows.first { $0.frame.contains(global) }
+        let cg = Self.globalMouseTopLeft()
+        let hit = windows.first { $0.frame.contains(cg) }
+        if hit?.windowID != hoverWindow?.windowID {
+            hoverWindow = hit
+            needsDisplay = true
+        }
     }
 
-    // A whole-screen tracking area so mouse-moved (window hover) fires reliably.
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseMoved, .activeAlways, .inVisibleRect],
-                                       owner: self, userInfo: nil))
+    /// The mouse location in global, top-left-origin CG points (matching SCWindow.frame).
+    private static func globalMouseTopLeft() -> CGPoint {
+        let loc = NSEvent.mouseLocation                  // global, bottom-left origin
+        let primaryH = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.main)?.frame.height ?? 0
+        return CGPoint(x: loc.x, y: primaryH - loc.y)
     }
 
     private func rebuildToolbar() {
@@ -259,10 +279,7 @@ final class SelectionCanvas: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        guard mode == .window else { return }
-        let global = toGlobalTopLeft(convert(event.locationInWindow, from: nil))
-        let hit = windows.first { $0.frame.contains(global) }   // front-to-back order
-        if hit?.windowID != hoverWindow?.windowID { hoverWindow = hit; needsDisplay = true }
+        if mode == .window { refreshHoverWindow() }   // backup to the poll timer
     }
 
     override func keyDown(with event: NSEvent) {

@@ -33,7 +33,9 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Current displays and on-screen windows, for the picker. Throws if Screen
     /// Recording isn't granted yet.
     static func shareableContent() async throws -> SCShareableContent {
-        try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // Exclude desktop windows (wallpaper, desktop icons) so the window picker
+        // only sees real app windows.
+        try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
     }
 
     // MARK: - Start / stop
