@@ -111,14 +111,15 @@ final class MediaViewerWindow: NSWindow, NSWindowDelegate {
         return CGSize(width: 1280, height: 800)
     }
 
-    /// The glass frame around the media. A thin, even border, with just enough
-    /// at the top to clear the traffic lights.
-    static let inset = NSEdgeInsets(top: 30, left: 13, bottom: 13, right: 13)
+    /// The glass frame around the media. Balanced on all sides; the top carries a
+    /// little extra only to clear the traffic lights, kept close to the sides so
+    /// the frame reads even.
+    static let inset = NSEdgeInsets(top: 26, left: 22, bottom: 26, right: 22)
 
     /// Window content size: the media fit into a comfortable box plus the glass frame.
     private static func fittedContentSize(for pixel: CGSize) -> CGSize {
         let screen = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
-        let maxMedia = CGSize(width: screen.width * 0.66, height: screen.height * 0.66)
+        let maxMedia = CGSize(width: screen.width * 0.62, height: screen.height * 0.62)
         let scale = min(maxMedia.width / pixel.width, maxMedia.height / pixel.height, 1)
         let media = CGSize(width: pixel.width * scale, height: pixel.height * scale)
         return CGSize(width: max(440, media.width + inset.left + inset.right),
@@ -144,7 +145,7 @@ struct MediaViewerView: View {
                 case .video(let url): VideoPane(url: url)
                 }
             }
-            .padding(EdgeInsets(top: 30, leading: 13, bottom: 13, trailing: 13))
+            .padding(EdgeInsets(top: 26, leading: 22, bottom: 26, trailing: 22))
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.985)
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.45), value: appeared)
