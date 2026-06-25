@@ -5,6 +5,10 @@ import AppKit
 final class PinStore {
     let dir: URL
     static let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "tiff", "heic"]
+    static let videoExts: Set<String> = ["mp4", "mov", "m4v"]
+    static let pinnableExts: Set<String> = imageExts.union(videoExts)
+
+    static func isVideo(_ url: URL) -> Bool { videoExts.contains(url.pathExtension.lowercased()) }
 
     init(root: URL? = nil) {
         let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -50,14 +54,19 @@ final class PinStore {
         try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
     }
 
-    /// Pinned images, newest first.
+    /// True once a copy of `file` (matched by name) already lives in the pin store.
+    func isPinned(_ file: URL) -> Bool {
+        pins().contains { $0.lastPathComponent == file.lastPathComponent }
+    }
+
+    /// Pinned screenshots and recordings, newest first.
     func pins() -> [URL] {
         let fm = FileManager.default
         let items = (try? fm.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles])) ?? []
         return items
-            .filter { Self.imageExts.contains($0.pathExtension.lowercased()) }
+            .filter { Self.pinnableExts.contains($0.pathExtension.lowercased()) }
             .sorted { (modDate($0) ?? .distantPast) > (modDate($1) ?? .distantPast) }
     }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 final class GalleryModel: ObservableObject {
@@ -122,8 +123,23 @@ struct GalleryView: View {
                              onCopy: { model.onCopyPin(url) })
                 }
             }
-            .padding(.horizontal, 14).padding(.bottom, 14)
+            .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 14)
         }
+        .scrollIndicators(.hidden)
+        // Colorless alpha fade at the top and bottom edges, so pins dissolve as they
+        // scroll off instead of hard-cutting. It's a mask (transparency only) — no
+        // dark tint, the glass behind shows straight through.
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .black, location: 0.05),
+                    .init(color: .black, location: 0.94),
+                    .init(color: .clear, location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
         .frame(height: gridHeight)
     }
 
@@ -216,6 +232,8 @@ struct PinThumb: View {
     @State private var hover = false
     @State private var image: NSImage?
 
+    private var isVideo: Bool { PinStore.isVideo(url) }
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -227,17 +245,29 @@ struct PinThumb: View {
                             .aspectRatio(contentMode: .fill)
                     }
                 }
+                // A recording shows a play badge: greyed at rest, white on hover.
+                .overlay {
+                    if isVideo {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white.opacity(hover ? 1 : 0.7))
+                            .frame(width: 38, height: 38)
+                            .background(.black.opacity(0.32), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(hover ? 0.5 : 0.25)))
+                            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(.white.opacity(hover ? 0.28 : 0.10), lineWidth: 1))   // image outline (pure white)
                 .contentShape(Rectangle())
                 .onTapGesture { onOpen() }
                 .onDrag { fileDragProvider(for: url) }
-                // Right-click: copy the image to the clipboard (the headline action),
-                // plus open and unpin for parity with the hover controls.
+                // Right-click: copy (the headline action), plus open and unpin for
+                // parity with the hover controls.
                 .contextMenu {
                     Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
-                    Button { onOpen() } label: { Label("Open", systemImage: "arrow.up.forward.app") }
+                    Button { onOpen() } label: { Label(isVideo ? "Play" : "Open", systemImage: "arrow.up.forward.app") }
                     Divider()
                     Button(role: .destructive) { onUnpin() } label: { Label("Unpin", systemImage: "pin.slash") }
                 }
@@ -259,9 +289,21 @@ struct PinThumb: View {
 
     private func load() {
         DispatchQueue.global(qos: .userInitiated).async {
-            let img = NSImage(contentsOf: url)
+            let img = isVideo ? Self.videoThumbnail(url) : NSImage(contentsOf: url)
             DispatchQueue.main.async { self.image = img }
         }
+    }
+
+    /// A poster frame for a video pin (a moment in, to avoid a black first frame).
+    private static func videoThumbnail(_ url: URL) -> NSImage? {
+        let asset = AVURLAsset(url: url)
+        let gen = AVAssetImageGenerator(asset: asset)
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 600, height: 600)
+        let dur = asset.duration.seconds
+        let t = CMTime(seconds: min(0.5, max(0, dur * 0.1)), preferredTimescale: 600)
+        guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else { return nil }
+        return NSImage(cgImage: cg, size: .zero)
     }
 }
 

@@ -33,6 +33,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         recording.onStateChange = { [weak self] in self?.updateRecordingUI() }
         recording.onFinished = { [weak self] url in self?.recordingFinished(url) }
 
+        // The media viewer's Pin button copies the shown file into the pin store
+        // and refreshes the gallery so it appears in the pinned section.
+        MediaViewerController.shared.onPin = { [weak self] url in
+            guard let self else { return }
+            self.pins.pin(url)
+            if self.galleryPanel != nil { self.refreshGallery() }
+        }
+        MediaViewerController.shared.pinnedCheck = { [weak self] url in
+            self?.pins.isPinned(url) ?? false
+        }
+
         watcher.onNewScreenshot = { [weak self] url in self?.present(url) }
         watcher.start()
         checkDesktopAccess()
@@ -121,7 +132,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         galleryModel.onRecord        = { [weak self] in self?.closePanel(); self?.recording.toggle() }
         galleryModel.onQuit          = { NSApp.terminate(nil) }
         galleryModel.onUnpin         = { [weak self] url in self?.pins.unpin(url); self?.refreshGallery() }
-        galleryModel.onOpenPin       = { url in MediaViewerController.shared.open(.image(url)) }
+        galleryModel.onOpenPin       = { url in
+            MediaViewerController.shared.open(PinStore.isVideo(url) ? .video(url) : .image(url))
+        }
         galleryModel.onCopyPin       = { [weak self] url in self?.copyPinAndDismiss(url) }
         galleryModel.onDropFiles     = { [weak self] urls in self?.pinDropped(urls) ?? false }
         galleryModel.onDropImages    = { [weak self] images in self?.pinImages(images) ?? false }

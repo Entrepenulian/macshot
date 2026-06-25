@@ -20,6 +20,13 @@ final class MediaViewerController {
     static let shared = MediaViewerController()
     private var windows: [MediaViewerWindow] = []
 
+    /// Wired by AppController to the pin store. Lets the viewer pin what it shows.
+    var onPin: ((URL) -> Void)?
+    var pinnedCheck: ((URL) -> Bool)?
+
+    func pin(_ url: URL) { onPin?(url) }
+    func isPinned(_ url: URL) -> Bool { pinnedCheck?(url) ?? false }
+
     func open(_ media: ViewerMedia) {
         if let existing = windows.first(where: { $0.mediaURL == media.url }) {
             existing.makeKeyAndOrderFront(nil)
@@ -231,6 +238,7 @@ private struct ImagePane: View {
         }
         .overlay(alignment: .bottom) {
             HStack(spacing: 2) {
+                PinButton(url: url)
                 CopyButton { copy() }
                 ActionLabelButton(icon: "folder", title: "Reveal") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -288,6 +296,7 @@ private struct VideoPane: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
+            PinButton(url: url)
             CopyButton(labeled: false) { copyFile() }
             GlassIconButton(icon: savingGIF ? "hourglass" : "square.stack.3d.down.right",
                             help: "Save GIF") { saveGIF() }
@@ -436,6 +445,31 @@ private struct CopyButton: View {
             .scaleEffect(shown ? 1 : 0.25)
             .blur(radius: shown ? 0 : 4)
             .animation(.easeInOut(duration: 0.26), value: copied)
+    }
+}
+
+/// Pin / unpin the shown media. Fills in (and flips to a filled pin) once added
+/// to the pinned section; reflects the live pinned state.
+private struct PinButton: View {
+    let url: URL
+    @State private var pinned = false
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            if !pinned { MediaViewerController.shared.pin(url); pinned = true }
+        } label: {
+            Image(systemName: pinned ? "pin.fill" : "pin")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(pinned ? 1 : (hover ? 1 : 0.88)))
+                .frame(width: 28, height: 28)
+                .background(Capsule().fill(.white.opacity(hover ? 0.14 : 0)))
+        }
+        .buttonStyle(.plain)
+        .help(pinned ? "Pinned" : "Pin")
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover)
+        .onAppear { pinned = MediaViewerController.shared.isPinned(url) }
     }
 }
 
