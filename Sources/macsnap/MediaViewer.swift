@@ -218,10 +218,15 @@ private struct ImagePane: View {
             }
         }
         .overlay(alignment: .bottom) {
-            ActionBar(items: [
-                .init("Copy", "doc.on.doc") { copy() },
-                .init("Reveal", "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
-            ])
+            HStack(spacing: 2) {
+                CopyButton { copy() }
+                ActionLabelButton(icon: "folder", title: "Reveal") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+            .padding(4)
+            .modifier(GlassPill())
+            .shadow(color: .black.opacity(0.32), radius: 16, y: 6)
             .padding(.bottom, 10)
             .opacity(hovering ? 1 : 0)
             .offset(y: hovering ? 0 : 6)
@@ -271,7 +276,7 @@ private struct VideoPane: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
-            GlassIconButton(icon: "doc.on.doc", help: "Copy") { copyFile() }
+            CopyButton(labeled: false) { copyFile() }
             GlassIconButton(icon: savingGIF ? "hourglass" : "square.stack.3d.down.right",
                             help: "Save GIF") { saveGIF() }
                 .disabled(savingGIF)
@@ -339,30 +344,17 @@ final class PlayerModel: ObservableObject {
 
 // MARK: - Shared bits
 
-/// A small floating action bar (used on images).
-private struct ActionBar: View {
-    struct Item: Identifiable { let id = UUID(); let title: String; let icon: String; let action: () -> Void
-        init(_ t: String, _ i: String, _ a: @escaping () -> Void) { title = t; icon = i; action = a } }
-    let items: [Item]
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(items) { item in ActionLabelButton(item: item) }
-        }
-        .padding(4)
-        .modifier(GlassPill())
-        .shadow(color: .black.opacity(0.32), radius: 16, y: 6)
-    }
-}
-
+/// A labelled glass action button (icon + title) with a capsule hover.
 private struct ActionLabelButton: View {
-    let item: ActionBar.Item
+    let icon: String
+    let title: String
+    let action: () -> Void
     @State private var hover = false
     var body: some View {
-        Button(action: item.action) {
+        Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: item.icon).font(.system(size: 12.5, weight: .semibold))
-                Text(item.title).font(.system(size: 12.5, weight: .medium))
+                Image(systemName: icon).font(.system(size: 12.5, weight: .semibold))
+                Text(title).font(.system(size: 12.5, weight: .medium))
             }
             .foregroundStyle(.white.opacity(hover ? 1 : 0.86))
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -370,6 +362,64 @@ private struct ActionLabelButton: View {
         }
         .buttonStyle(.plain).onHover { hover = $0 }
         .animation(.easeOut(duration: 0.14), value: hover)
+    }
+}
+
+/// Copy with confirmation: on tap it copies, the icon cross-fades to a checkmark
+/// with a scale + blur swap (the transitions-dev icon-swap), and the label flips
+/// to "Copied" — reverting after a beat.
+private struct CopyButton: View {
+    var labeled: Bool = true
+    let action: () -> Void
+    @State private var copied = false
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            action()
+            withAnimation(.easeInOut(duration: 0.26)) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation(.easeInOut(duration: 0.26)) { copied = false }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                iconSlot
+                if labeled {
+                    Text(copied ? "Copied" : "Copy")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(hover || copied ? 1 : 0.86))
+                        .contentTransition(.opacity)
+                        .fixedSize()
+                }
+            }
+            .padding(.horizontal, labeled ? 12 : 0).padding(.vertical, labeled ? 8 : 0)
+            .frame(width: labeled ? nil : 28, height: labeled ? nil : 28)
+            .background(Capsule().fill(.white.opacity(hover ? 0.13 : 0)))
+        }
+        .buttonStyle(.plain)
+        .disabled(copied)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover)
+        .help("Copy")
+    }
+
+    /// Two icons sharing one slot, cross-faded with scale (0.25→1) and blur (4→0).
+    private var iconSlot: some View {
+        ZStack {
+            swapIcon("doc.on.doc", shown: !copied)
+            swapIcon("checkmark", shown: copied)
+        }
+        .frame(width: 16, height: 16)
+    }
+
+    private func swapIcon(_ name: String, shown: Bool) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .opacity(shown ? 1 : 0)
+            .scaleEffect(shown ? 1 : 0.25)
+            .blur(radius: shown ? 0 : 4)
+            .animation(.easeInOut(duration: 0.26), value: copied)
     }
 }
 
