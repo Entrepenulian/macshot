@@ -26,6 +26,8 @@ final class GalleryModel: ObservableObject {
 struct GalleryView: View {
     @ObservedObject var model: GalleryModel
     @State private var dropTargeted = false
+    @State private var fadeTop = false
+    @State private var fadeBottom = false
     private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     private let accent = Color(red: 1.0, green: 0.416, blue: 0.102)   // #FF6A1A
@@ -126,11 +128,15 @@ struct GalleryView: View {
             .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 14)
         }
         .scrollIndicators(.hidden)
-        // Pins blur away at the top and bottom edges. The strips blur the pins
-        // scrolling under them (within-window blur), masked so the blur is full at
-        // the very edge and clears inward — a soft blur, no fade-to-dark.
-        .overlay(alignment: .top) { EdgeBlur(edge: .top) }
-        .overlay(alignment: .bottom) { EdgeBlur(edge: .bottom) }
+        // A clean, colorless (alpha-only) fade that's scroll-aware: an edge only
+        // fades once there's content scrolled past it, so nothing fades at rest.
+        .onScrollGeometryChange(for: EdgeFlags.self) { geo in
+            EdgeFlags(
+                top: geo.contentOffset.y > 1,
+                bottom: geo.contentOffset.y < geo.contentSize.height - geo.containerSize.height - 1
+            )
+        } action: { _, flags in fadeTop = flags.top; fadeBottom = flags.bottom }
+        .mask(EdgeFadeMask(fadeTop: fadeTop, fadeBottom: fadeBottom))
         .frame(height: gridHeight)
     }
 
@@ -346,25 +352,27 @@ private func dragTempCopy(of url: URL) -> URL? {
     do { try fm.copyItem(at: url, to: dest); return dest } catch { return nil }
 }
 
-/// A soft "blur away" at a scroll edge: a thin strip of material that blurs the
-/// pins passing under it, masked so the blur is full at the very edge and clears
-/// inward. Pure blur — no color, no darkening.
-struct EdgeBlur: View {
-    enum Edge { case top, bottom }
-    let edge: Edge
-    private let height: CGFloat = 40
+/// Whether each scroll edge has content past it (so it should fade).
+struct EdgeFlags: Equatable { var top: Bool; var bottom: Bool }
+
+/// A colorless, alpha-only mask that softly fades the scroll content at an edge —
+/// but only the edges flagged (i.e. where there's content scrolled past). Pure
+/// transparency: it adds no colour and no material, it just feathers the edge.
+struct EdgeFadeMask: View {
+    let fadeTop: Bool
+    let fadeBottom: Bool
+    private let fade: CGFloat = 26
 
     var body: some View {
-        // A real within-window blur of the pins behind the strip, masked so it's
-        // full at the very edge and clears inward — a soft "blur away".
-        VisualEffect(material: .popover, blending: .withinWindow)
-            .frame(height: height)
-            .mask(
-                LinearGradient(colors: [.black, .clear],
-                               startPoint: edge == .top ? .top : .bottom,
-                               endPoint: edge == .top ? .bottom : .top)
-            )
-            .allowsHitTesting(false)
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: fadeTop ? fade : 0)
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: fadeBottom ? fade : 0)
+        }
+        .animation(.easeOut(duration: 0.18), value: fadeTop)
+        .animation(.easeOut(duration: 0.18), value: fadeBottom)
     }
 }
 
