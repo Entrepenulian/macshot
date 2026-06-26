@@ -641,11 +641,9 @@ private struct RedGlass: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content.glassEffect(.regular.tint(tint), in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
         } else {
             content.background(Capsule().fill(tint))
                 .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
         }
     }
 }
