@@ -605,8 +605,9 @@ struct SelectionBarView: View {
 
     private var formatBar: some View {
         HStack(spacing: 3) {
-            SelectionPill(title: "Video", icon: "video.fill", on: model.format == .video) { onFormat(.video) }
-            SelectionPill(title: "GIF", icon: "photo.stack.fill", on: model.format == .gif) { onFormat(.gif) }
+            // No default focus — both read as unselected; clicking one starts the flow.
+            SelectionPill(title: "Video", icon: "video.fill", on: false) { onFormat(.video) }
+            SelectionPill(title: "GIF", icon: "photo.stack.fill", on: false) { onFormat(.gif) }
             divider
             SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
         }
