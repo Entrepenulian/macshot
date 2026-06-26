@@ -11,6 +11,9 @@ enum RecordTarget {
     case area(SCDisplay, CGRect)   // rect in global screen points (top-left origin)
 }
 
+/// What the finished recording is saved as.
+enum RecordFormat { case video, gif }
+
 /// Captures a display, a window, or a dragged region with ScreenCaptureKit and
 /// writes it straight to an MP4 via AVAssetWriter. Frames are H.264-compressed in
 /// real time; the cursor is included. Needs Screen Recording permission (the same

@@ -8,6 +8,7 @@ final class RecordingController {
 
     private let recorder = ScreenRecorder()
     private let selection = RecordSelectionController()
+    private let hotKeys = GlobalHotKeys()
 
     private(set) var isRecording = false
 
@@ -38,7 +39,7 @@ final class RecordingController {
         }
         // The overlay drives the flow (pick → adjust → Start → Pause/Stop); we drive
         // the recorder in response.
-        selection.onStart = { [weak self] target in Task { @MainActor in await self?.begin(target) } }
+        selection.onStart = { [weak self] target, format in Task { @MainActor in await self?.begin(target, format) } }
         selection.onPauseToggle = { [weak self] in
             guard let self else { return }
             self.recorder.isPaused ? self.recorder.resume() : self.recorder.pause()
@@ -57,17 +58,18 @@ final class RecordingController {
         }
     }
 
-    private func begin(_ target: RecordTarget) async {
+    private func begin(_ target: RecordTarget, _ format: RecordFormat) async {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("macsnap-rec-\(UUID().uuidString).mp4")
 
         recorder.onFinish = { [weak self] finished in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.hotKeys.unregister()                       // restore normal ⌘P / ⌘S
                 self.selection.dismiss()
                 self.isRecording = false
                 self.onStateChange?()
-                if let finished { self.save(finished) }
+                if let finished { self.save(finished, format: format) }
             }
         }
 
@@ -75,10 +77,13 @@ final class RecordingController {
             try await recorder.start(target: target, to: url)
             await MainActor.run {
                 self.isRecording = true
+                // ⌘P pause, ⌘S stop — system-wide while recording.
+                self.hotKeys.register(onPause: { [weak self] in self?.selection.hotkeyPause() },
+                                      onStop:  { [weak self] in self?.selection.hotkeyStop() })
                 self.onStateChange?()
             }
         } catch {
-            await MainActor.run { self.selection.dismiss() }   // failed — drop the overlay
+            await MainActor.run { self.hotKeys.unregister(); self.selection.dismiss() }   // failed — drop the overlay
             NSLog("macsnap: recording failed to start — \(error.localizedDescription)")
         }
     }
@@ -88,17 +93,25 @@ final class RecordingController {
         recorder.stop()   // its onFinish saves + dismisses the overlay
     }
 
-    private func save(_ temp: URL) {
+    private func save(_ temp: URL, format: RecordFormat) {
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyy-MM-dd 'at' h.mm.ss a"
-        let dest = Self.recordingsDirectory()
-            .appendingPathComponent("Recording \(stamp.string(from: Date())).mp4")
-        do {
-            try FileManager.default.moveItem(at: temp, to: dest)
-            onFinished?(dest)
-        } catch {
-            NSLog("macsnap: could not save recording — \(error.localizedDescription)")
-            onFinished?(temp)   // hand back the temp so the work isn't lost
+        let base = "Recording \(stamp.string(from: Date()))"
+
+        switch format {
+        case .video:
+            let dest = Self.recordingsDirectory().appendingPathComponent("\(base).mp4")
+            do { try FileManager.default.moveItem(at: temp, to: dest); onFinished?(dest) }
+            catch { NSLog("macsnap: could not save recording — \(error.localizedDescription)"); onFinished?(temp) }
+
+        case .gif:
+            // Convert the captured MP4 to a GIF, then drop the temp video.
+            let dest = Self.recordingsDirectory().appendingPathComponent("\(base).gif")
+            GIFExporter.export(videoURL: temp, to: dest) { [weak self] ok in
+                try? FileManager.default.removeItem(at: temp)
+                if ok { self?.onFinished?(dest) }
+                else { NSLog("macsnap: GIF export failed"); NSSound.beep() }
+            }
         }
     }
 

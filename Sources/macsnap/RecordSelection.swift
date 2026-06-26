@@ -11,8 +11,8 @@ final class RecordSelectionController {
 
     private var panel: SelectionPanel?
 
-    /// Begin recording the chosen target.
-    var onStart: ((RecordTarget) -> Void)?
+    /// Begin recording the chosen target, in the chosen format.
+    var onStart: ((RecordTarget, RecordFormat) -> Void)?
     /// Toggle pause/resume (the bar's paused state is managed in the overlay).
     var onPauseToggle: (() -> Void)?
     /// Stop and finish recording.
@@ -38,7 +38,7 @@ final class RecordSelectionController {
 
         let panel = SelectionPanel(screen: screen, display: display, windows: windows)
         panel.canvas.onCancel = { [weak self] in self?.dismiss(); self?.onCancel?() }
-        panel.canvas.onStart = { [weak self] target in self?.onStart?(target) }
+        panel.canvas.onStart = { [weak self] target, format in self?.onStart?(target, format) }
         panel.canvas.onPauseToggle = { [weak self] in self?.onPauseToggle?() }
         panel.canvas.onStop = { [weak self] in self?.onStop?() }
         self.panel = panel
@@ -50,6 +50,9 @@ final class RecordSelectionController {
         panel?.dismiss()
         panel = nil
     }
+
+    func hotkeyPause() { panel?.canvas.hotkeyPause() }
+    func hotkeyStop()  { panel?.canvas.hotkeyStop() }
 }
 
 private extension NSScreen {
@@ -99,9 +102,10 @@ final class SelectionCanvas: NSView {
     private let display: SCDisplay
     private let windows: [SCWindow]
 
-    enum Phase { case picking, adjusting, recording }
-    private(set) var phase: Phase = .picking
+    enum Phase { case format, picking, adjusting, recording }
+    private(set) var phase: Phase = .format
     private var mode: RecordSelectionController.Mode = .area
+    private var format: RecordFormat = .video
 
     // Picking
     private var dragStart: NSPoint?
@@ -131,7 +135,7 @@ final class SelectionCanvas: NSView {
 
     // Callbacks
     var onCancel: () -> Void = {}
-    var onStart: (RecordTarget) -> Void = { _ in }
+    var onStart: (RecordTarget, RecordFormat) -> Void = { _, _ in }
     var onPauseToggle: () -> Void = {}
     var onStop: () -> Void = {}
 
@@ -163,6 +167,8 @@ final class SelectionCanvas: NSView {
 
     override func resetCursorRects() {
         switch phase {
+        case .format:
+            addCursorRect(bounds, cursor: .arrow)
         case .picking:
             addCursorRect(bounds, cursor: mode == .area ? .crosshair : .pointingHand)
         case .adjusting:
@@ -231,7 +237,7 @@ final class SelectionCanvas: NSView {
             if let i = handleAt(p) { grab = .handle(i); grabRect = selRect; grabMouse = p }
             else if selRect.insetBy(dx: 2, dy: 2).contains(p) { grab = .move; grabRect = selRect; grabMouse = p }
             else { grab = .redraw; dragStart = p; dragRect = NSRect(origin: p, size: .zero) }   // re-draw a new area
-        case .recording:
+        case .format, .recording:
             break
         }
         needsDisplay = true
@@ -296,6 +302,27 @@ final class SelectionCanvas: NSView {
         needsDisplay = true
     }
 
+    /// Format step (Video / GIF) chosen → advance to the record-type picker.
+    private func chooseFormat(_ f: RecordFormat) {
+        format = f
+        phase = .picking
+        if mode == .window { startHoverPolling() }
+        syncBar()
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
+    /// The X in the picker steps back to the Video / GIF format bar.
+    private func backToFormat() {
+        phase = .format
+        selRect = .zero
+        dragRect = nil; dragStart = nil
+        stopHoverPolling()
+        syncBar()
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
     /// The X in adjust mode returns to the record-type picker instead of cancelling.
     private func backToPicking() {
         phase = .picking
@@ -317,12 +344,16 @@ final class SelectionCanvas: NSView {
         syncBar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
-        onStart(target)
+        onStart(target, format)
     }
 
     func startAreaRecording() {
         startRecording(target: .area(display, toGlobalRect(selRect)), rect: selRect, isScreen: false)
     }
+
+    /// Called by the global ⌘P / ⌘S hotkeys (only act while recording).
+    func hotkeyPause() { if phase == .recording { togglePause() } }
+    func hotkeyStop()  { if phase == .recording { onStop() } }
 
     private func togglePause() {
         paused.toggle()
@@ -390,8 +421,10 @@ final class SelectionCanvas: NSView {
         syncBar()   // seed the model
         let view = SelectionBarView(
             model: barModel,
+            onFormat: { [weak self] f in self?.chooseFormat(f) },
             onMode: { [weak self] m in self?.setMode(m) },
             onCancel: { [weak self] in self?.onCancel() },
+            onBackToFormat: { [weak self] in self?.backToFormat() },
             onBack: { [weak self] in self?.backToPicking() },
             onStart: { [weak self] in self?.startAreaRecording() },
             onPauseToggle: { [weak self] in self?.togglePause() },
@@ -420,9 +453,15 @@ final class SelectionCanvas: NSView {
     /// transition between bar states.
     private func syncBar() {
         barModel.phase = {
-            switch phase { case .picking: return .picking; case .adjusting: return .adjusting; case .recording: return .recording }
+            switch phase {
+            case .format: return .format
+            case .picking: return .picking
+            case .adjusting: return .adjusting
+            case .recording: return .recording
+            }
         }()
         barModel.mode = mode
+        barModel.format = format
         barModel.paused = paused
         barModel.dims = dimsString()
     }
@@ -433,8 +472,8 @@ final class SelectionCanvas: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let radius: CGFloat = 8
 
-        // Screen target: a soft even dim while choosing; clear once recording.
-        if phase == .picking && mode == .screen {
+        // Format step + screen target: a soft even dim, no region.
+        if phase == .format || (phase == .picking && mode == .screen) {
             ctx.setFillColor(NSColor.black.withAlphaComponent(0.20).cgColor); ctx.fill(bounds)
             return
         }
@@ -446,6 +485,7 @@ final class SelectionCanvas: NSView {
 
         let hole: NSRect?
         switch phase {
+        case .format: hole = nil   // handled above
         case .picking: hole = (mode == .area) ? dragRect : hoverWindow.map { toView($0.frame) }
         case .adjusting: hole = (grab == .redraw) ? (dragRect ?? selRect) : selRect
         case .recording: hole = selRect
@@ -520,18 +560,21 @@ final class SelectionCanvas: NSView {
 /// Drives the bar. Published changes let the SwiftUI view animate calmly between
 /// the three bar states instead of snapping.
 final class BarModel: ObservableObject {
-    @Published var phase: SelectionBarView.Phase = .picking
+    @Published var phase: SelectionBarView.Phase = .format
     @Published var mode: RecordSelectionController.Mode = .area
+    @Published var format: RecordFormat = .video
     @Published var paused = false
     @Published var elapsed = "0:00"
     @Published var dims = ""
 }
 
 struct SelectionBarView: View {
-    enum Phase { case picking, adjusting, recording }
+    enum Phase { case format, picking, adjusting, recording }
     @ObservedObject var model: BarModel
+    var onFormat: (RecordFormat) -> Void = { _ in }
     var onMode: (RecordSelectionController.Mode) -> Void = { _ in }
     var onCancel: () -> Void = {}
+    var onBackToFormat: () -> Void = {}
     var onBack: () -> Void = {}
     var onStart: () -> Void = {}
     var onPauseToggle: () -> Void = {}
@@ -540,6 +583,7 @@ struct SelectionBarView: View {
     var body: some View {
         ZStack {
             switch model.phase {
+            case .format:    formatBar.transition(.calmSwap)
             case .picking:   pickingBar.transition(.calmSwap)
             case .adjusting: adjustingBar.transition(.calmSwap)
             case .recording: recordingBar.transition(.calmSwap)
@@ -559,13 +603,23 @@ struct SelectionBarView: View {
         Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 24).padding(.horizontal, 5)
     }
 
+    private var formatBar: some View {
+        HStack(spacing: 3) {
+            SelectionPill(title: "Video", icon: "video.fill", on: model.format == .video) { onFormat(.video) }
+            SelectionPill(title: "GIF", icon: "photo.stack.fill", on: model.format == .gif) { onFormat(.gif) }
+            divider
+            SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
+        }
+    }
+
     private var pickingBar: some View {
         HStack(spacing: 3) {
             SelectionPill(title: "Area", icon: "rectangle.dashed", on: model.mode == .area) { onMode(.area) }
             SelectionPill(title: "Window", icon: "macwindow", on: model.mode == .window) { onMode(.window) }
             SelectionPill(title: "Screen", icon: "display", on: model.mode == .screen) { onMode(.screen) }
             divider
-            SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
+            // X steps back to the Video / GIF format bar.
+            SelectionPill(title: "", icon: "xmark", on: false, action: onBackToFormat)
         }
     }
 
@@ -584,15 +638,32 @@ struct SelectionBarView: View {
         HStack(spacing: 3) {
             HStack(spacing: 7) {
                 Circle().fill(model.paused ? Color.white.opacity(0.5) : Color.red).frame(width: 9, height: 9)
-                Text(model.elapsed).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                Text(model.elapsed)
+                    .font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .contentTransition(.numericText())                 // native rolling digits
+                    .animation(.snappy(duration: 0.32), value: model.elapsed)
             }
             .padding(.horizontal, 10)
             divider
             BarButton(title: model.paused ? "Resume" : "Pause",
                       systemImage: model.paused ? "play.fill" : "pause.fill",
-                      style: .neutral, action: onPauseToggle)
-            BarButton(title: "Stop", systemImage: "stop.fill", style: .stop, action: onStop)
+                      style: .neutral, shortcut: "P", action: onPauseToggle)
+            BarButton(title: "Stop", systemImage: "stop.fill", style: .stop, shortcut: "S", action: onStop)
         }
+    }
+}
+
+/// A native-looking keycap hint: the ⌘ glyph + a letter.
+private struct KeyHint: View {
+    let key: String
+    var body: some View {
+        HStack(spacing: 1) {
+            Image(systemName: "command").font(.system(size: 9, weight: .semibold))
+            Text(key).font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(.white.opacity(0.6))
+        .padding(.horizontal, 5).padding(.vertical, 2.5)
+        .background(Capsule().fill(.white.opacity(0.14)))
     }
 }
 
@@ -663,6 +734,7 @@ private struct BarButton: View {
     let title: String
     let systemImage: String
     let style: Style
+    var shortcut: String? = nil
     let action: () -> Void
     @State private var hover = false
 
@@ -673,6 +745,7 @@ private struct BarButton: View {
             HStack(spacing: 6) {
                 Image(systemName: systemImage).font(.system(size: 12.5, weight: .semibold))
                 Text(title).font(.system(size: 13, weight: .semibold))
+                if let shortcut { KeyHint(key: shortcut) }
             }
             .foregroundStyle(style == .stop ? red : .white.opacity(hover ? 1 : 0.85))
             .padding(.horizontal, 14).padding(.vertical, 8)

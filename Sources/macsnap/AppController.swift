@@ -292,7 +292,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// A recording finished and was saved to ~/Desktop/MacSnap Recordings —
     /// open it in the custom Liquid-Glass player.
     private func recordingFinished(_ url: URL) {
-        MediaViewerController.shared.open(.video(url))
+        // A GIF opens in the image viewer; an MP4 in the video viewer.
+        MediaViewerController.shared.open(PinStore.isVideo(url) ? .video(url) : .image(url))
     }
 
     // MARK: screenshot a website — captures EXACTLY what you see: the VISIBLE page region
