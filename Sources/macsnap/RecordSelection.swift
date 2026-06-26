@@ -294,6 +294,17 @@ final class SelectionCanvas: NSView {
         needsDisplay = true
     }
 
+    /// The X in adjust mode returns to the record-type picker instead of cancelling.
+    private func backToPicking() {
+        phase = .picking
+        selRect = .zero
+        dragRect = nil; dragStart = nil; grab = .none
+        if mode == .window { startHoverPolling() }
+        rebuildBar()
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
     private func startRecording(target: RecordTarget, rect: NSRect, isScreen: Bool) {
         selRect = rect
         targetIsScreen = isScreen
@@ -397,6 +408,7 @@ final class SelectionCanvas: NSView {
             phase: barPhase, mode: mode, paused: paused, elapsed: elapsedString(), dims: dims,
             onMode: { [weak self] m in self?.setMode(m) },
             onCancel: { [weak self] in self?.onCancel() },
+            onBack: { [weak self] in self?.backToPicking() },
             onStart: { [weak self] in self?.startAreaRecording() },
             onPauseToggle: { [weak self] in self?.togglePause() },
             onStop: { [weak self] in self?.onStop() })
@@ -501,6 +513,7 @@ struct SelectionBarView: View {
     let dims: String
     var onMode: (RecordSelectionController.Mode) -> Void = { _ in }
     var onCancel: () -> Void = {}
+    var onBack: () -> Void = {}
     var onStart: () -> Void = {}
     var onPauseToggle: () -> Void = {}
     var onStop: () -> Void = {}
@@ -542,7 +555,8 @@ struct SelectionBarView: View {
             divider
             BarButton(title: "Start Recording", systemImage: "record.circle.fill",
                       style: .recordStart, action: onStart)
-            SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
+            // X here goes back to the record-type picker (not cancel).
+            SelectionPill(title: "", icon: "xmark", on: false, action: onBack)
         }
     }
 
