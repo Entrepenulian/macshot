@@ -127,6 +127,7 @@ final class SelectionCanvas: NSView {
     private var recTimer: Timer?
 
     private var toolbar: NSHostingView<SelectionBarView>?
+    private let barModel = BarModel()   // drives the animated bar-state transitions
 
     // Callbacks
     var onCancel: () -> Void = {}
@@ -253,6 +254,7 @@ final class SelectionCanvas: NSView {
                 dragRect = NSRect(x: min(s.x, p.x), y: min(s.y, p.y), width: abs(p.x - s.x), height: abs(p.y - s.y))
             case .none: break
             }
+            barModel.dims = dimsString()   // live readout in the bar while resizing
         default: break
         }
         needsDisplay = true
@@ -269,7 +271,7 @@ final class SelectionCanvas: NSView {
         case .adjusting:
             if grab == .redraw, let r = dragRect, r.width > 16, r.height > 16 { selRect = r }
             grab = .none; dragRect = nil; dragStart = nil
-            rebuildBar(); window?.invalidateCursorRects(for: self)
+            syncBar(); window?.invalidateCursorRects(for: self)
         default: break
         }
         needsDisplay = true
@@ -289,7 +291,7 @@ final class SelectionCanvas: NSView {
     private func enterAdjusting() {
         phase = .adjusting
         stopHoverPolling()
-        rebuildBar()
+        syncBar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
@@ -300,7 +302,7 @@ final class SelectionCanvas: NSView {
         selRect = .zero
         dragRect = nil; dragStart = nil; grab = .none
         if mode == .window { startHoverPolling() }
-        rebuildBar()
+        syncBar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
@@ -312,7 +314,7 @@ final class SelectionCanvas: NSView {
         stopHoverPolling()
         recStart = Date(); pausedTotal = 0; pauseStart = nil; paused = false
         startRecTimer()
-        rebuildBar()
+        syncBar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
         onStart(target)
@@ -327,14 +329,17 @@ final class SelectionCanvas: NSView {
         if paused { pauseStart = Date() }
         else if let ps = pauseStart { pausedTotal += Date().timeIntervalSince(ps); pauseStart = nil }
         onPauseToggle()
-        rebuildBar()
+        syncBar()
     }
 
     // MARK: recording timer
 
     private func startRecTimer() {
         recTimer?.invalidate()
-        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.rebuildBar() }
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.barModel.elapsed = self.elapsedString()
+        }
         RunLoop.main.add(t, forMode: .common)
         recTimer = t
     }
@@ -374,7 +379,7 @@ final class SelectionCanvas: NSView {
         mode = m
         dragRect = nil; dragStart = nil; hoverWindow = nil
         if m == .window { startHoverPolling() } else { stopHoverPolling() }
-        rebuildBar()
+        syncBar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
@@ -382,8 +387,18 @@ final class SelectionCanvas: NSView {
     // MARK: toolbar
 
     func installToolbar() {
-        let tb = NSHostingView(rootView: makeBar())
+        syncBar()   // seed the model
+        let view = SelectionBarView(
+            model: barModel,
+            onMode: { [weak self] m in self?.setMode(m) },
+            onCancel: { [weak self] in self?.onCancel() },
+            onBack: { [weak self] in self?.backToPicking() },
+            onStart: { [weak self] in self?.startAreaRecording() },
+            onPauseToggle: { [weak self] in self?.togglePause() },
+            onStop: { [weak self] in self?.onStop() })
+        let tb = NSHostingView(rootView: view)
         tb.translatesAutoresizingMaskIntoConstraints = false
+        tb.sizingOptions = [.intrinsicContentSize]
         addSubview(tb)
         NSLayoutConstraint.activate([
             tb.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -396,22 +411,20 @@ final class SelectionCanvas: NSView {
         }
     }
 
-    private func rebuildBar() { toolbar?.rootView = makeBar() }
-
-    private func makeBar() -> SelectionBarView {
+    private func dimsString() -> String {
         let scale = screen.backingScaleFactor
-        let dims = "\(Int(selRect.width * scale)) × \(Int(selRect.height * scale))"
-        let barPhase: SelectionBarView.Phase = {
+        return "\(Int(selRect.width * scale)) × \(Int(selRect.height * scale))"
+    }
+
+    /// Push the current state into the bar model; the SwiftUI view animates the
+    /// transition between bar states.
+    private func syncBar() {
+        barModel.phase = {
             switch phase { case .picking: return .picking; case .adjusting: return .adjusting; case .recording: return .recording }
         }()
-        return SelectionBarView(
-            phase: barPhase, mode: mode, paused: paused, elapsed: elapsedString(), dims: dims,
-            onMode: { [weak self] m in self?.setMode(m) },
-            onCancel: { [weak self] in self?.onCancel() },
-            onBack: { [weak self] in self?.backToPicking() },
-            onStart: { [weak self] in self?.startAreaRecording() },
-            onPauseToggle: { [weak self] in self?.togglePause() },
-            onStop: { [weak self] in self?.onStop() })
+        barModel.mode = mode
+        barModel.paused = paused
+        barModel.dims = dimsString()
     }
 
     // MARK: drawing
@@ -502,15 +515,21 @@ final class SelectionCanvas: NSView {
 }
 
 
-// MARK: - Bar (SwiftUI, liquid glass) — picking / adjusting / recording
+// MARK: - Bar model + view (animated picking / adjusting / recording)
+
+/// Drives the bar. Published changes let the SwiftUI view animate calmly between
+/// the three bar states instead of snapping.
+final class BarModel: ObservableObject {
+    @Published var phase: SelectionBarView.Phase = .picking
+    @Published var mode: RecordSelectionController.Mode = .area
+    @Published var paused = false
+    @Published var elapsed = "0:00"
+    @Published var dims = ""
+}
 
 struct SelectionBarView: View {
     enum Phase { case picking, adjusting, recording }
-    let phase: Phase
-    let mode: RecordSelectionController.Mode
-    let paused: Bool
-    let elapsed: String
-    let dims: String
+    @ObservedObject var model: BarModel
     var onMode: (RecordSelectionController.Mode) -> Void = { _ in }
     var onCancel: () -> Void = {}
     var onBack: () -> Void = {}
@@ -519,19 +538,21 @@ struct SelectionBarView: View {
     var onStop: () -> Void = {}
 
     var body: some View {
-        content
-            .padding(7)
-            .modifier(ToolbarGlass())
-            .shadow(color: .black.opacity(0.4), radius: 26, y: 10)
-            .fixedSize()
-    }
-
-    @ViewBuilder private var content: some View {
-        switch phase {
-        case .picking:    pickingBar
-        case .adjusting:  adjustingBar
-        case .recording:  recordingBar
+        ZStack {
+            switch model.phase {
+            case .picking:   pickingBar.transition(.calmSwap)
+            case .adjusting: adjustingBar.transition(.calmSwap)
+            case .recording: recordingBar.transition(.calmSwap)
+            }
         }
+        .padding(7)
+        .modifier(ToolbarGlass())
+        .shadow(color: .black.opacity(0.4), radius: 26, y: 10)
+        .fixedSize()
+        // Calm cross-blur swap + smooth capsule resize (transitions-dev: text-swap
+        // + card-resize), no bounce.
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.32), value: model.phase)
+        .animation(.easeInOut(duration: 0.2), value: model.paused)
     }
 
     private var divider: some View {
@@ -540,9 +561,9 @@ struct SelectionBarView: View {
 
     private var pickingBar: some View {
         HStack(spacing: 3) {
-            SelectionPill(title: "Area", icon: "rectangle.dashed", on: mode == .area) { onMode(.area) }
-            SelectionPill(title: "Window", icon: "macwindow", on: mode == .window) { onMode(.window) }
-            SelectionPill(title: "Screen", icon: "display", on: mode == .screen) { onMode(.screen) }
+            SelectionPill(title: "Area", icon: "rectangle.dashed", on: model.mode == .area) { onMode(.area) }
+            SelectionPill(title: "Window", icon: "macwindow", on: model.mode == .window) { onMode(.window) }
+            SelectionPill(title: "Screen", icon: "display", on: model.mode == .screen) { onMode(.screen) }
             divider
             SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
         }
@@ -550,11 +571,10 @@ struct SelectionBarView: View {
 
     private var adjustingBar: some View {
         HStack(spacing: 3) {
-            Text(dims).font(.system(size: 12, weight: .medium)).monospacedDigit()
+            Text(model.dims).font(.system(size: 12, weight: .medium)).monospacedDigit()
                 .foregroundStyle(.white.opacity(0.6)).padding(.horizontal, 8)
             divider
-            BarButton(title: "Start Recording", systemImage: "record.circle.fill",
-                      style: .recordStart, action: onStart)
+            StartRecordButton(action: onStart)
             // X here goes back to the record-type picker (not cancel).
             SelectionPill(title: "", icon: "xmark", on: false, action: onBack)
         }
@@ -563,30 +583,89 @@ struct SelectionBarView: View {
     private var recordingBar: some View {
         HStack(spacing: 3) {
             HStack(spacing: 7) {
-                Circle().fill(paused ? Color.white.opacity(0.5) : Color.red).frame(width: 9, height: 9)
-                Text(elapsed).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                Circle().fill(model.paused ? Color.white.opacity(0.5) : Color.red).frame(width: 9, height: 9)
+                Text(model.elapsed).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
             }
             .padding(.horizontal, 10)
             divider
-            BarButton(title: paused ? "Resume" : "Pause",
-                      systemImage: paused ? "play.fill" : "pause.fill",
+            BarButton(title: model.paused ? "Resume" : "Pause",
+                      systemImage: model.paused ? "play.fill" : "pause.fill",
                       style: .neutral, action: onPauseToggle)
             BarButton(title: "Stop", systemImage: "stop.fill", style: .stop, action: onStop)
         }
     }
 }
 
-/// A bar action button with three looks: a prominent start, a neutral glass
-/// control, and a red stop.
+/// A calm cross-blur swap for the bar contents (fade + blur + a hair of scale).
+private struct BarSwapModifier: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        content.opacity(active ? 0 : 1).blur(radius: active ? 4 : 0).scaleEffect(active ? 0.97 : 1)
+    }
+}
+private extension AnyTransition {
+    static var calmSwap: AnyTransition {
+        .modifier(active: BarSwapModifier(active: true), identity: BarSwapModifier(active: false))
+    }
+}
+
+/// The premium "Start Recording" button: a glossy red capsule with a soft red
+/// glow, a clean white record dot, a lift on hover, and a tactile press.
+private struct StartRecordButton: View {
+    let action: () -> Void
+    @State private var hover = false
+
+    private let top = Color(red: 1.0, green: 0.41, blue: 0.37)
+    private let bottom = Color(red: 0.93, green: 0.20, blue: 0.16)
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Circle().fill(.white).frame(width: 10, height: 10)
+                    .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+                Text("Start Recording").font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(
+                ZStack {
+                    Capsule().fill(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
+                    // top gloss
+                    Capsule().fill(LinearGradient(colors: [.white.opacity(0.32), .clear],
+                                                  startPoint: .top, endPoint: .center))
+                        .blendMode(.plusLighter)
+                    Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                }
+            )
+            .brightness(hover ? 0.05 : 0)
+            .shadow(color: bottom.opacity(hover ? 0.55 : 0.38), radius: hover ? 14 : 9, y: hover ? 5 : 3)
+            .scaleEffect(hover ? 1.025 : 1)
+        }
+        .buttonStyle(PressScaleStyle())
+        .onHover { h in hover = h; if h { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+        .animation(.easeOut(duration: 0.16), value: hover)
+    }
+}
+
+/// A tactile press: scale to 0.96 while held (make-interfaces-feel-better).
+private struct PressScaleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.spring(response: 0.26, dampingFraction: 0.62), value: configuration.isPressed)
+    }
+}
+
+/// Neutral glass / red stop bar buttons.
 private struct BarButton: View {
-    enum Style { case recordStart, neutral, stop }
+    enum Style { case neutral, stop }
     let title: String
     let systemImage: String
     let style: Style
     let action: () -> Void
     @State private var hover = false
 
-    private let red = Color(red: 1.0, green: 0.27, blue: 0.23)
+    private let red = Color(red: 1.0, green: 0.32, blue: 0.28)
 
     var body: some View {
         Button(action: action) {
@@ -594,36 +673,15 @@ private struct BarButton: View {
                 Image(systemName: systemImage).font(.system(size: 12.5, weight: .semibold))
                 Text(title).font(.system(size: 13, weight: .semibold))
             }
-            .foregroundStyle(fg)
+            .foregroundStyle(style == .stop ? red : .white.opacity(hover ? 1 : 0.85))
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Capsule().fill(bg))
-            .overlay(Capsule().strokeBorder(stroke))
+            .background(Capsule().fill(style == .stop ? red.opacity(hover ? 0.20 : 0.12)
+                                                       : .white.opacity(hover ? 0.16 : 0.001)))
+            .overlay(Capsule().strokeBorder(style == .stop ? red.opacity(0.35) : .clear))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScaleStyle())
         .onHover { h in hover = h; if h { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
         .animation(.easeOut(duration: 0.14), value: hover)
-    }
-
-    private var fg: Color {
-        switch style {
-        case .recordStart: return .white
-        case .neutral:     return .white.opacity(hover ? 1 : 0.85)
-        case .stop:        return red
-        }
-    }
-    private var bg: Color {
-        switch style {
-        case .recordStart: return red.opacity(hover ? 1 : 0.92)
-        case .neutral:     return .white.opacity(hover ? 0.16 : 0.001)
-        case .stop:        return red.opacity(hover ? 0.18 : 0.10)
-        }
-    }
-    private var stroke: Color {
-        switch style {
-        case .recordStart: return .white.opacity(0.18)
-        case .neutral:     return .clear
-        case .stop:        return red.opacity(0.35)
-        }
     }
 }
 
