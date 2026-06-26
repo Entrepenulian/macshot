@@ -279,8 +279,10 @@ final class OverlayStack {
     private var panel: OverlayPanel!
     private var hosting: NSHostingController<StackView>!
     private let margin: CGFloat = 16     // gap from screen edges
+    private var spaceObservers: [NSObjectProtocol] = []
 
     init() { build() }
+    deinit { spaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 
     private func build() {
         hosting = NSHostingController(rootView: StackView(model: stackModel))
@@ -288,6 +290,27 @@ final class OverlayStack {
         panel = OverlayPanel(contentRect: NSRect(x: 0, y: 0, width: ShotView.width, height: 1))
         panel.contentViewController = hosting
         panel.alphaValue = 0
+
+        // Belt-and-suspenders so the preview ALWAYS rides along to the corner of
+        // whatever you switch to. `.canJoinAllSpaces` usually handles this, but
+        // re-asserting on every space/app switch makes it bulletproof — it follows
+        // to a different window, a different desktop, or a fullscreen app.
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didActivateApplicationNotification] {
+            spaceObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.reassert()
+            })
+        }
+    }
+
+    /// Re-pin the panel to the active screen's corner and bring it forward, so a
+    /// space or app switch can never leave it behind.
+    private func reassert() {
+        guard !stackModel.cards.isEmpty else { return }
+        relayout(animated: false)
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
     }
 
     func add(_ c: OverlayController) {
