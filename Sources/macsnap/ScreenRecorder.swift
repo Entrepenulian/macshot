@@ -22,11 +22,36 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var input: AVAssetWriterInput?
     private let queue = DispatchQueue(label: "com.macsnap.recorder.samples")
 
+    // Pause support: paused frames are dropped, and the paused span is subtracted
+    // from every later frame's timestamp so it isn't in the finished video.
+    private var paused = false
+    private var timeOffset = CMTime.zero
+    private var pauseStartPTS: CMTime?
+    private var lastPTS = CMTime.zero
+
     private(set) var outputURL: URL?
     /// Called on the main queue when writing has finished (or failed → nil).
     var onFinish: ((URL?) -> Void)?
 
     var isRecording: Bool { stream != nil }
+    private(set) var isPaused = false
+
+    func pause() {
+        queue.async { [weak self] in
+            guard let self, !self.paused else { return }
+            self.paused = true
+            self.pauseStartPTS = self.lastPTS
+        }
+        isPaused = true
+    }
+
+    func resume() {
+        queue.async { [weak self] in
+            guard let self, self.paused else { return }
+            self.paused = false   // the next frame computes the paused gap
+        }
+        isPaused = false
+    }
 
     // MARK: - Shareable content
 
@@ -61,6 +86,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         self.writer = writer
         self.input = input
         self.outputURL = url
+        paused = false; isPaused = false; timeOffset = .zero; pauseStartPTS = nil; lastPTS = .zero
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
@@ -174,13 +200,44 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
               let statusRaw = attachments.first?[.status] as? Int,
               SCFrameStatus(rawValue: statusRaw) == .complete else { return }
 
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        lastPTS = pts
+        if paused { return }   // drop frames while paused
+
+        // First frame after a resume: fold the paused span into the running offset.
+        if let ps = pauseStartPTS {
+            timeOffset = timeOffset + (pts - ps)
+            pauseStartPTS = nil
+        }
+
         if writer.status == .unknown {
-            let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             writer.startWriting()
-            writer.startSession(atSourceTime: start)
+            writer.startSession(atSourceTime: pts - timeOffset)
         }
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
-        input.append(sampleBuffer)
+
+        // Re-time the frame by the accumulated paused offset so playback is seamless.
+        let buffer = timeOffset == .zero ? sampleBuffer : Self.retimed(sampleBuffer, minus: timeOffset)
+        if let buffer { input.append(buffer) }
+    }
+
+    /// A copy of `buffer` with its presentation/decode timestamps shifted earlier
+    /// by `offset` (the total paused duration so far).
+    private static func retimed(_ buffer: CMSampleBuffer, minus offset: CMTime) -> CMSampleBuffer? {
+        var count: CMItemCount = 0
+        CMSampleBufferGetSampleTimingInfoArray(buffer, entryCount: 0, arrayToFill: nil, entriesNeededOut: &count)
+        guard count > 0 else { return buffer }
+        var timings = [CMSampleTimingInfo](repeating: CMSampleTimingInfo(), count: count)
+        CMSampleBufferGetSampleTimingInfoArray(buffer, entryCount: count, arrayToFill: &timings, entriesNeededOut: nil)
+        for i in 0..<count {
+            timings[i].presentationTimeStamp = timings[i].presentationTimeStamp - offset
+            if timings[i].decodeTimeStamp.isValid { timings[i].decodeTimeStamp = timings[i].decodeTimeStamp - offset }
+        }
+        var out: CMSampleBuffer?
+        CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: buffer,
+                                              sampleTimingEntryCount: count, sampleTimingArray: &timings,
+                                              sampleBufferOut: &out)
+        return out
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
