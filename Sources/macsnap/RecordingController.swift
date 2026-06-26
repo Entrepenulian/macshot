@@ -36,15 +36,20 @@ final class RecordingController {
             screenRecordingAlert()
             return
         }
+        // The overlay drives the flow (pick → adjust → Start → Pause/Stop); we drive
+        // the recorder in response.
+        selection.onStart = { [weak self] target in Task { @MainActor in await self?.begin(target) } }
+        selection.onPauseToggle = { [weak self] in
+            guard let self else { return }
+            self.recorder.isPaused ? self.recorder.resume() : self.recorder.pause()
+        }
+        selection.onStop = { [weak self] in self?.recorder.stop() }   // onFinish saves + dismisses
+        selection.onCancel = { [weak self] in self?.selection.dismiss() }
+
         Task { @MainActor in
             do {
                 let content = try await ScreenRecorder.shareableContent()
-                selection.begin(content: content) { [weak self] target in
-                    guard let self, let target else { return }   // nil = cancelled
-                    // The selection overlay has already switched itself into recording
-                    // mode (same window, dim untouched) — just start the recorder.
-                    Task { @MainActor in await self.begin(target) }
-                }
+                selection.begin(content: content)
             } catch {
                 NSLog("macsnap: could not read shareable content — \(error.localizedDescription)")
                 screenRecordingAlert()
@@ -59,7 +64,7 @@ final class RecordingController {
         recorder.onFinish = { [weak self] finished in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.selection.tearDownRecordingOverlay()   // remove the dim window
+                self.selection.dismiss()
                 self.isRecording = false
                 self.onStateChange?()
                 if let finished { self.save(finished) }
@@ -68,21 +73,19 @@ final class RecordingController {
 
         do {
             try await recorder.start(target: target, to: url)
-            // The dim is the same window from selection (already up); just flip
-            // state + status item on the main thread.
             await MainActor.run {
                 self.isRecording = true
                 self.onStateChange?()
             }
         } catch {
-            await MainActor.run { self.selection.tearDownRecordingOverlay() }   // failed — clear the dim
+            await MainActor.run { self.selection.dismiss() }   // failed — drop the overlay
             NSLog("macsnap: recording failed to start — \(error.localizedDescription)")
         }
     }
 
     func stop() {
         guard isRecording else { return }
-        recorder.stop()   // its onFinish removes the dim window
+        recorder.stop()   // its onFinish saves + dismisses the overlay
     }
 
     private func save(_ temp: URL) {

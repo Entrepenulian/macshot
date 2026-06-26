@@ -2,29 +2,32 @@ import AppKit
 import SwiftUI
 import ScreenCaptureKit
 
-/// The pre-recording picker. Dims the main display and lets you choose what to
-/// record: drag an **Area**, click a **Window**, or take the whole **Screen**.
-/// Returns a `RecordTarget`, or nil if cancelled (Esc / Cancel).
-///
-/// Coordinates: selection is computed in global, top-left-origin screen points
-/// (CG space), which is exactly what `ScreenRecorder` wants for an area.
+/// The recording picker + controls overlay. Choose what to record (drag an Area,
+/// click a Window, or the whole Screen); for an Area you can then resize it with
+/// handles before starting. Once recording it shows Pause / Stop with a timer.
 final class RecordSelectionController {
 
     enum Mode { case area, window, screen }
 
     private var panel: SelectionPanel?
-    private var completion: ((RecordTarget?) -> Void)?
 
-    func begin(content: SCShareableContent, completion: @escaping (RecordTarget?) -> Void) {
+    /// Begin recording the chosen target.
+    var onStart: ((RecordTarget) -> Void)?
+    /// Toggle pause/resume (the bar's paused state is managed in the overlay).
+    var onPauseToggle: (() -> Void)?
+    /// Stop and finish recording.
+    var onStop: (() -> Void)?
+    /// The picker was cancelled before recording started.
+    var onCancel: (() -> Void)?
+
+    func begin(content: SCShareableContent) {
         guard let screen = NSScreen.main,
               let display = content.displays.first(where: { $0.displayID == screen.displayID })
-                ?? content.displays.first else { completion(nil); return }
-        self.completion = completion
+                ?? content.displays.first else { onCancel?(); return }
 
-        // Real, front-to-back app windows only. windowLayer == 0 is the normal
-        // window layer — this drops the Dock, menu bar, wallpaper and other system
-        // surfaces (the Dock in particular spans the whole screen and would "match"
-        // every hover, so the highlight looked like it did nothing).
+        // Real, front-to-back app windows only. windowLayer == 0 is the normal window
+        // layer — drops the Dock, menu bar, wallpaper (the Dock spans the whole screen
+        // and would "match" every hover, so the highlight looked like it did nothing).
         let windows = content.windows.filter {
             $0.windowLayer == 0
                 && $0.isOnScreen
@@ -34,28 +37,16 @@ final class RecordSelectionController {
         }
 
         let panel = SelectionPanel(screen: screen, display: display, windows: windows)
-        panel.onFinish = { [weak self] target in self?.finish(target) }
+        panel.canvas.onCancel = { [weak self] in self?.dismiss(); self?.onCancel?() }
+        panel.canvas.onStart = { [weak self] target in self?.onStart?(target) }
+        panel.canvas.onPauseToggle = { [weak self] in self?.onPauseToggle?() }
+        panel.canvas.onStop = { [weak self] in self?.onStop?() }
         self.panel = panel
         panel.present()
     }
 
-    private func finish(_ target: RecordTarget?) {
-        let done = completion
-        completion = nil
-        if target != nil {
-            // Keep the SAME window and just switch it to recording mode — the dim
-            // never moves, shifts, or flashes; only the toolbar + border drop away.
-            panel?.enterRecordingMode()
-        } else {
-            panel?.dismiss()
-            panel = nil
-        }
-        done?(target)
-    }
-
-
-    /// Remove the lingering recording-dim window when recording ends.
-    func tearDownRecordingOverlay() {
+    /// Remove the overlay (after Stop, or on cancel).
+    func dismiss() {
         panel?.dismiss()
         panel = nil
     }
@@ -70,8 +61,7 @@ private extension NSScreen {
 // MARK: - Panel
 
 final class SelectionPanel: NSPanel {
-    var onFinish: ((RecordTarget?) -> Void)?
-    private let canvas: SelectionCanvas
+    let canvas: SelectionCanvas
 
     init(screen: NSScreen, display: SCDisplay, windows: [SCWindow]) {
         canvas = SelectionCanvas(screen: screen, display: display, windows: windows)
@@ -85,7 +75,6 @@ final class SelectionPanel: NSPanel {
         acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         contentView = canvas
-        canvas.onFinish = { [weak self] in self?.onFinish?($0) }
     }
 
     override var canBecomeKey: Bool { true }
@@ -101,15 +90,7 @@ final class SelectionPanel: NSPanel {
     }
 
     func dismiss() { orderOut(nil) }
-
-    /// Switch this same window into recording mode: it stays up as the dim, but
-    /// becomes click-through and drops its toolbar + selection border.
-    func enterRecordingMode() {
-        ignoresMouseEvents = true
-        canvas.enterRecordingMode()
-    }
 }
-
 
 // MARK: - Canvas
 
@@ -117,17 +98,43 @@ final class SelectionCanvas: NSView {
     let screen: NSScreen
     private let display: SCDisplay
     private let windows: [SCWindow]
-    var onFinish: ((RecordTarget?) -> Void)?
 
+    enum Phase { case picking, adjusting, recording }
+    private(set) var phase: Phase = .picking
     private var mode: RecordSelectionController.Mode = .area
-    private var dragStart: NSPoint?
-    private var dragRect: NSRect?            // in view coords, live during a drag
-    private var hoverWindow: SCWindow?
-    private var toolbar: NSHostingView<SelectionToolbar>?
-    private var recording = false           // after release: keep the dim, drop the chrome
-    private var hoverTimer: Timer?          // polls the pointer for window-hover highlight
 
-    private let accent = NSColor.white
+    // Picking
+    private var dragStart: NSPoint?
+    private var dragRect: NSRect?            // live area drag, view coords
+    private var hoverWindow: SCWindow?
+    private var hoverTimer: Timer?
+
+    // Confirmed target rect (view coords) for adjusting / recording.
+    private var selRect: NSRect = .zero
+    private var targetIsScreen = false       // recording the whole display (no dim)
+
+    // Adjust (resize / move)
+    private enum Grab: Equatable { case none, move, handle(Int), redraw }
+    private var grab: Grab = .none
+    private var grabMouse: NSPoint = .zero
+    private var grabRect: NSRect = .zero
+
+    // Recording timer
+    private var paused = false
+    private var recStart = Date()
+    private var pausedTotal: TimeInterval = 0
+    private var pauseStart: Date?
+    private var recTimer: Timer?
+
+    private var toolbar: NSHostingView<SelectionBarView>?
+
+    // Callbacks
+    var onCancel: () -> Void = {}
+    var onStart: (RecordTarget) -> Void = { _ in }
+    var onPauseToggle: () -> Void = {}
+    var onStop: () -> Void = {}
+
+    private let handleHitRadius: CGFloat = 14
 
     init(screen: NSScreen, display: SCDisplay, windows: [SCWindow]) {
         self.screen = screen
@@ -137,78 +144,198 @@ final class SelectionCanvas: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit { hoverTimer?.invalidate(); recTimer?.invalidate() }
 
     override var acceptsFirstResponder: Bool { true }
-    // macsnap is a menu-bar (accessory) app, so this overlay panel is often not the
-    // key window. Without this, the first mouse-down is swallowed to activate the
-    // window instead of starting the drag — so the area selection "just clicked".
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // During recording, only the controls bar is interactive — clicks elsewhere
+    // pass straight through to the app being recorded.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        if phase == .recording {
+            if let tb = toolbar, let hit, hit.isDescendant(of: tb) { return hit }
+            return nil
+        }
+        return hit
+    }
+
     override func resetCursorRects() {
-        // Crosshair to drag an area; a pointing hand to click a window or the screen.
-        addCursorRect(bounds, cursor: mode == .area ? .crosshair : .pointingHand)
-        // The toolbar is for clicking, not aiming — show the normal arrow over it
-        // (its buttons switch to the pointing hand on hover).
+        switch phase {
+        case .picking:
+            addCursorRect(bounds, cursor: mode == .area ? .crosshair : .pointingHand)
+        case .adjusting:
+            addCursorRect(bounds, cursor: .crosshair)
+            // Move inside, resize on the edge handles.
+            addCursorRect(selRect.insetBy(dx: handleHitRadius, dy: handleHitRadius), cursor: .openHand)
+            for (i, p) in handlePoints(selRect).enumerated() {
+                let c: NSCursor = (i == 3 || i == 4) ? .resizeLeftRight : (i == 1 || i == 6) ? .resizeUpDown : .crosshair
+                addCursorRect(NSRect(x: p.x - handleHitRadius, y: p.y - handleHitRadius,
+                                     width: handleHitRadius * 2, height: handleHitRadius * 2), cursor: c)
+            }
+        case .recording:
+            break
+        }
         if let tb = toolbar, tb.frame.width > 1 { addCursorRect(tb.frame, cursor: .arrow) }
     }
 
-    // MARK: coordinate conversion (view ↔ global top-left CG)
+    // MARK: coordinate conversion
 
-    /// View point (bottom-left) → global top-left CG point.
-    private func toGlobalTopLeft(_ p: NSPoint) -> CGPoint {
-        CGPoint(x: screen.frame.minX + p.x, y: screen.frame.maxY - p.y)
-    }
-    /// Global top-left CG rect → view rect (bottom-left).
     private func toView(_ g: CGRect) -> NSRect {
-        NSRect(x: g.minX - screen.frame.minX,
-               y: screen.frame.maxY - g.maxY,
-               width: g.width, height: g.height)
+        NSRect(x: g.minX - screen.frame.minX, y: screen.frame.maxY - g.maxY, width: g.width, height: g.height)
+    }
+    /// View rect → global, top-left-origin CG rect (what the recorder wants).
+    private func toGlobalRect(_ r: NSRect) -> CGRect {
+        CGRect(x: screen.frame.minX + r.minX, y: screen.frame.maxY - r.maxY,
+               width: r.width, height: r.height).integral
     }
 
-    // MARK: toolbar
+    // MARK: handles (0=TL 1=TM 2=TR 3=ML 4=MR 5=BL 6=BM 7=BR; view coords, y-up)
 
-    func installToolbar() {
-        let tb = NSHostingView(rootView: SelectionToolbar(
-            mode: mode,
-            onMode: { [weak self] m in self?.setMode(m) },
-            onCancel: { [weak self] in self?.onFinish?(nil) }))
-        tb.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(tb)
-        NSLayoutConstraint.activate([
-            tb.centerXAnchor.constraint(equalTo: centerXAnchor),
-            tb.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -104),   // clear of the Dock
-        ])
-        toolbar = tb
-        // Rebuild cursor rects once the toolbar has a real frame.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.window?.invalidateCursorRects(for: self)
+    private func handlePoints(_ r: NSRect) -> [NSPoint] {
+        [NSPoint(x: r.minX, y: r.maxY), NSPoint(x: r.midX, y: r.maxY), NSPoint(x: r.maxX, y: r.maxY),
+         NSPoint(x: r.minX, y: r.midY),                                 NSPoint(x: r.maxX, y: r.midY),
+         NSPoint(x: r.minX, y: r.minY), NSPoint(x: r.midX, y: r.minY), NSPoint(x: r.maxX, y: r.minY)]
+    }
+
+    private func handleAt(_ p: NSPoint) -> Int? {
+        for (i, h) in handlePoints(selRect).enumerated() where hypot(p.x - h.x, p.y - h.y) <= handleHitRadius {
+            return i
         }
+        return nil
     }
 
-    /// Keep the exact same dim (and the same clear hole) but drop the toolbar and
-    /// the selection border — so when the user releases, nothing about the dimmed
-    /// layer moves or flashes.
-    func enterRecordingMode() {
-        recording = true
+    private func resized(_ start: NSRect, handle i: Int, to p: NSPoint) -> NSRect {
+        var minX = start.minX, maxX = start.maxX, minY = start.minY, maxY = start.maxY
+        if i == 0 || i == 3 || i == 5 { minX = p.x }      // left
+        if i == 2 || i == 4 || i == 7 { maxX = p.x }      // right
+        if i == 0 || i == 1 || i == 2 { maxY = p.y }      // top (y-up)
+        if i == 5 || i == 6 || i == 7 { minY = p.y }      // bottom
+        let x = min(minX, maxX), y = min(minY, maxY)
+        return NSRect(x: x, y: y, width: max(40, abs(maxX - minX)), height: max(40, abs(maxY - minY)))
+    }
+
+    // MARK: mouse
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        switch phase {
+        case .picking:
+            switch mode {
+            case .area:   dragStart = p; dragRect = NSRect(origin: p, size: .zero)
+            case .screen: startRecording(target: .display(display), rect: bounds, isScreen: true)
+            case .window: if let w = hoverWindow { startRecording(target: .window(w), rect: toView(w.frame), isScreen: false) }
+            }
+        case .adjusting:
+            if let i = handleAt(p) { grab = .handle(i); grabRect = selRect; grabMouse = p }
+            else if selRect.insetBy(dx: 2, dy: 2).contains(p) { grab = .move; grabRect = selRect; grabMouse = p }
+            else { grab = .redraw; dragStart = p; dragRect = NSRect(origin: p, size: .zero) }   // re-draw a new area
+        case .recording:
+            break
+        }
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        switch phase {
+        case .picking where mode == .area:
+            guard let s = dragStart else { return }
+            dragRect = NSRect(x: min(s.x, p.x), y: min(s.y, p.y), width: abs(p.x - s.x), height: abs(p.y - s.y))
+        case .adjusting:
+            switch grab {
+            case .handle(let i): selRect = resized(grabRect, handle: i, to: p)
+            case .move:
+                let dx = p.x - grabMouse.x, dy = p.y - grabMouse.y
+                selRect = grabRect.offsetBy(dx: dx, dy: dy)
+            case .redraw:
+                guard let s = dragStart else { return }
+                dragRect = NSRect(x: min(s.x, p.x), y: min(s.y, p.y), width: abs(p.x - s.x), height: abs(p.y - s.y))
+            case .none: break
+            }
+        default: break
+        }
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        switch phase {
+        case .picking where mode == .area:
+            if let r = dragRect, r.width > 16, r.height > 16 {
+                selRect = r; enterAdjusting()
+            } else {
+                dragRect = nil; dragStart = nil
+            }
+        case .adjusting:
+            if grab == .redraw, let r = dragRect, r.width > 16, r.height > 16 { selRect = r }
+            grab = .none; dragRect = nil; dragStart = nil
+            rebuildBar(); window?.invalidateCursorRects(for: self)
+        default: break
+        }
+        needsDisplay = true
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if phase == .picking, mode == .window { refreshHoverWindow() }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { onCancel() }    // Esc cancels (only meaningful before recording)
+        else { super.keyDown(with: event) }
+    }
+
+    // MARK: phase transitions
+
+    private func enterAdjusting() {
+        phase = .adjusting
         stopHoverPolling()
-        toolbar?.removeFromSuperview()
-        toolbar = nil
+        rebuildBar()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
     }
 
-    deinit { hoverTimer?.invalidate() }
-
-
-    private func setMode(_ m: RecordSelectionController.Mode) {
-        mode = m
-        dragRect = nil; dragStart = nil; hoverWindow = nil
-        // Window hover can't rely on mouseMoved (a borderless, non-key panel often
-        // never gets it). Poll the mouse position on a timer instead — bulletproof.
-        if m == .window { startHoverPolling() } else { stopHoverPolling() }
-        rebuildToolbar()
-        window?.invalidateCursorRects(for: self)   // crosshair ↔ pointing hand
+    private func startRecording(target: RecordTarget, rect: NSRect, isScreen: Bool) {
+        selRect = rect
+        targetIsScreen = isScreen
+        phase = .recording
+        stopHoverPolling()
+        recStart = Date(); pausedTotal = 0; pauseStart = nil; paused = false
+        startRecTimer()
+        rebuildBar()
+        window?.invalidateCursorRects(for: self)
         needsDisplay = true
+        onStart(target)
     }
+
+    func startAreaRecording() {
+        startRecording(target: .area(display, toGlobalRect(selRect)), rect: selRect, isScreen: false)
+    }
+
+    private func togglePause() {
+        paused.toggle()
+        if paused { pauseStart = Date() }
+        else if let ps = pauseStart { pausedTotal += Date().timeIntervalSince(ps); pauseStart = nil }
+        onPauseToggle()
+        rebuildBar()
+    }
+
+    // MARK: recording timer
+
+    private func startRecTimer() {
+        recTimer?.invalidate()
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.rebuildBar() }
+        RunLoop.main.add(t, forMode: .common)
+        recTimer = t
+    }
+
+    private func elapsedString() -> String {
+        var secs = Date().timeIntervalSince(recStart) - pausedTotal
+        if let ps = pauseStart { secs -= Date().timeIntervalSince(ps) }
+        let t = max(0, Int(secs))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
+    // MARK: window hover
 
     private func startHoverPolling() {
         stopHoverPolling()
@@ -219,114 +346,130 @@ final class SelectionCanvas: NSView {
     }
     private func stopHoverPolling() { hoverTimer?.invalidate(); hoverTimer = nil }
 
-    /// The window under the current mouse location (front-to-back). Reads the live
-    /// pointer position directly, so it works without any mouse-moved events.
     private func refreshHoverWindow() {
         let cg = Self.globalMouseTopLeft()
         let hit = windows.first { $0.frame.contains(cg) }
-        if hit?.windowID != hoverWindow?.windowID {
-            hoverWindow = hit
-            needsDisplay = true
-        }
+        if hit?.windowID != hoverWindow?.windowID { hoverWindow = hit; needsDisplay = true }
     }
-
-    /// The mouse location in global, top-left-origin CG points (matching SCWindow.frame).
     private static func globalMouseTopLeft() -> CGPoint {
-        let loc = NSEvent.mouseLocation                  // global, bottom-left origin
+        let loc = NSEvent.mouseLocation
         let primaryH = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.main)?.frame.height ?? 0
         return CGPoint(x: loc.x, y: primaryH - loc.y)
     }
 
-    private func rebuildToolbar() {
-        toolbar?.rootView = SelectionToolbar(
-            mode: mode,
+    // MARK: mode (picking)
+
+    private func setMode(_ m: RecordSelectionController.Mode) {
+        mode = m
+        dragRect = nil; dragStart = nil; hoverWindow = nil
+        if m == .window { startHoverPolling() } else { stopHoverPolling() }
+        rebuildBar()
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
+    // MARK: toolbar
+
+    func installToolbar() {
+        let tb = NSHostingView(rootView: makeBar())
+        tb.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(tb)
+        NSLayoutConstraint.activate([
+            tb.centerXAnchor.constraint(equalTo: centerXAnchor),
+            tb.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -104),
+        ])
+        toolbar = tb
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private func rebuildBar() { toolbar?.rootView = makeBar() }
+
+    private func makeBar() -> SelectionBarView {
+        let scale = screen.backingScaleFactor
+        let dims = "\(Int(selRect.width * scale)) × \(Int(selRect.height * scale))"
+        let barPhase: SelectionBarView.Phase = {
+            switch phase { case .picking: return .picking; case .adjusting: return .adjusting; case .recording: return .recording }
+        }()
+        return SelectionBarView(
+            phase: barPhase, mode: mode, paused: paused, elapsed: elapsedString(), dims: dims,
             onMode: { [weak self] m in self?.setMode(m) },
-            onCancel: { [weak self] in self?.onFinish?(nil) })
-    }
-
-    // MARK: mouse
-
-    override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        switch mode {
-        case .area:
-            dragStart = p; dragRect = NSRect(origin: p, size: .zero)
-        case .screen:
-            onFinish?(.display(display))
-        case .window:
-            if let w = hoverWindow { onFinish?(.window(w)) }
-        }
-        needsDisplay = true
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard mode == .area, let s = dragStart else { return }
-        let p = convert(event.locationInWindow, from: nil)
-        dragRect = NSRect(x: min(s.x, p.x), y: min(s.y, p.y),
-                          width: abs(p.x - s.x), height: abs(p.y - s.y))
-        needsDisplay = true
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard mode == .area, let r = dragRect, r.width > 12, r.height > 12 else {
-            dragRect = nil; dragStart = nil; needsDisplay = true; return
-        }
-        // View rect → global top-left CG rect for the recorder.
-        let global = CGRect(x: screen.frame.minX + r.minX,
-                            y: screen.frame.maxY - r.maxY,
-                            width: r.width, height: r.height).integral
-        onFinish?(.area(display, global))
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        if mode == .window { refreshHoverWindow() }   // backup to the poll timer
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onFinish?(nil) }       // Esc
-        else { super.keyDown(with: event) }
+            onCancel: { [weak self] in self?.onCancel() },
+            onStart: { [weak self] in self?.startAreaRecording() },
+            onPauseToggle: { [weak self] in self?.togglePause() },
+            onStop: { [weak self] in self?.onStop() })
     }
 
     // MARK: drawing
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let radius: CGFloat = 8
 
-        // Screen mode targets the whole display. While choosing, a soft, even dim
-        // (no border) says "click to capture the screen"; once recording, it's fully
-        // clear so the capture is clean.
-        if mode == .screen {
-            if !recording {
-                ctx.setFillColor(NSColor.black.withAlphaComponent(0.20).cgColor)
-                ctx.fill(bounds)
-            }
+        // Screen target: a soft even dim while choosing; clear once recording.
+        if phase == .picking && mode == .screen {
+            ctx.setFillColor(NSColor.black.withAlphaComponent(0.20).cgColor); ctx.fill(bounds)
             return
         }
+        if phase == .recording && targetIsScreen { return }
 
+        // Dim everything, then clear the target region.
         ctx.setFillColor(NSColor.black.withAlphaComponent(0.28).cgColor)
         ctx.fill(bounds)
 
-        let hole: NSRect? = (mode == .area) ? dragRect : hoverWindow.map { toView($0.frame) }
+        let hole: NSRect?
+        switch phase {
+        case .picking: hole = (mode == .area) ? dragRect : hoverWindow.map { toView($0.frame) }
+        case .adjusting: hole = (grab == .redraw) ? (dragRect ?? selRect) : selRect
+        case .recording: hole = selRect
+        }
         guard let r = hole, r.width > 1, r.height > 1 else { return }
 
-        // Clear the target with softly rounded corners.
-        let radius: CGFloat = 8
         ctx.setBlendMode(.clear)
         ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
         ctx.fillPath()
         ctx.setBlendMode(.normal)
 
-        guard !recording else { return }
+        if phase == .recording { return }
 
-        // A thin guide only for the area drag — never a border around a window or
-        // the whole screen.
-        if mode == .area {
-            ctx.setStrokeColor(accent.cgColor)
-            ctx.setLineWidth(2)
-            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1),
-                               cornerWidth: radius, cornerHeight: radius, transform: nil))
+        if phase == .picking && mode == .area {
+            // Thin solid guide while dragging out the initial area.
+            ctx.setStrokeColor(NSColor.white.cgColor); ctx.setLineWidth(2)
+            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1), cornerWidth: radius, cornerHeight: radius, transform: nil))
             ctx.strokePath()
             drawDimensions(r, ctx: ctx)
+        } else if phase == .adjusting && grab != .redraw {
+            drawDashedFrame(r, ctx: ctx)
+            drawHandles(r, ctx: ctx)
+            drawDimensions(r, ctx: ctx)
+        } else if phase == .adjusting && grab == .redraw {
+            // mid re-draw: solid guide
+            ctx.setStrokeColor(NSColor.white.cgColor); ctx.setLineWidth(2)
+            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: 1, dy: 1), cornerWidth: radius, cornerHeight: radius, transform: nil))
+            ctx.strokePath()
+        }
+    }
+
+    private func drawDashedFrame(_ r: NSRect, ctx: CGContext) {
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(1.5)
+        ctx.setLineDash(phase: 0, lengths: [6, 4])
+        ctx.stroke(r)
+        ctx.setLineDash(phase: 0, lengths: [])
+    }
+
+    private func drawHandles(_ r: NSRect, ctx: CGContext) {
+        let blue = NSColor(srgbRed: 0.0, green: 0.48, blue: 1.0, alpha: 1).cgColor
+        let radius: CGFloat = 6
+        for p in handlePoints(r) {
+            let dot = CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)
+            ctx.setShadow(offset: .zero, blur: 3, color: NSColor.black.withAlphaComponent(0.4).cgColor)
+            ctx.setFillColor(blue); ctx.fillEllipse(in: dot)
+            ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            ctx.setStrokeColor(NSColor.white.cgColor); ctx.setLineWidth(2)
+            ctx.strokeEllipse(in: dot)
         }
     }
 
@@ -334,61 +477,155 @@ final class SelectionCanvas: NSView {
         let scale = screen.backingScaleFactor
         let label = "\(Int(r.width * scale)) × \(Int(r.height * scale))"
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.white,
         ]
         let size = (label as NSString).size(withAttributes: attrs)
         let pad: CGFloat = 7
-        let box = NSRect(x: r.midX - size.width / 2 - pad,
-                         y: max(r.minY - size.height - 14, 8),
+        let box = NSRect(x: r.midX - size.width / 2 - pad, y: max(r.minY - size.height - 16, 8),
                          width: size.width + pad * 2, height: size.height + pad)
-        let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
-        NSColor.black.withAlphaComponent(0.75).setFill(); path.fill()
+        NSColor.black.withAlphaComponent(0.75).setFill()
+        NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6).fill()
         (label as NSString).draw(at: NSPoint(x: box.minX + pad, y: box.minY + pad / 2), withAttributes: attrs)
     }
 }
 
-// MARK: - Toolbar (SwiftUI, liquid glass)
 
-struct SelectionToolbar: View {
-    var mode: RecordSelectionController.Mode
-    var onMode: (RecordSelectionController.Mode) -> Void
-    var onCancel: () -> Void
+// MARK: - Bar (SwiftUI, liquid glass) — picking / adjusting / recording
+
+struct SelectionBarView: View {
+    enum Phase { case picking, adjusting, recording }
+    let phase: Phase
+    let mode: RecordSelectionController.Mode
+    let paused: Bool
+    let elapsed: String
+    let dims: String
+    var onMode: (RecordSelectionController.Mode) -> Void = { _ in }
+    var onCancel: () -> Void = {}
+    var onStart: () -> Void = {}
+    var onPauseToggle: () -> Void = {}
+    var onStop: () -> Void = {}
 
     var body: some View {
+        content
+            .padding(7)
+            .modifier(ToolbarGlass())
+            .shadow(color: .black.opacity(0.4), radius: 26, y: 10)
+            .fixedSize()
+    }
+
+    @ViewBuilder private var content: some View {
+        switch phase {
+        case .picking:    pickingBar
+        case .adjusting:  adjustingBar
+        case .recording:  recordingBar
+        }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 24).padding(.horizontal, 5)
+    }
+
+    private var pickingBar: some View {
         HStack(spacing: 3) {
             SelectionPill(title: "Area", icon: "rectangle.dashed", on: mode == .area) { onMode(.area) }
             SelectionPill(title: "Window", icon: "macwindow", on: mode == .window) { onMode(.window) }
             SelectionPill(title: "Screen", icon: "display", on: mode == .screen) { onMode(.screen) }
-
-            Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 26).padding(.horizontal, 5)
-
+            divider
             SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
         }
-        .padding(7)
-        .modifier(ToolbarGlass())
-        .shadow(color: .black.opacity(0.4), radius: 26, y: 10)
-        .fixedSize()
+    }
+
+    private var adjustingBar: some View {
+        HStack(spacing: 3) {
+            Text(dims).font(.system(size: 12, weight: .medium)).monospacedDigit()
+                .foregroundStyle(.white.opacity(0.6)).padding(.horizontal, 8)
+            divider
+            BarButton(title: "Start Recording", systemImage: "record.circle.fill",
+                      style: .recordStart, action: onStart)
+            SelectionPill(title: "", icon: "xmark", on: false, action: onCancel)
+        }
+    }
+
+    private var recordingBar: some View {
+        HStack(spacing: 3) {
+            HStack(spacing: 7) {
+                Circle().fill(paused ? Color.white.opacity(0.5) : Color.red).frame(width: 9, height: 9)
+                Text(elapsed).font(.system(size: 13, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+            }
+            .padding(.horizontal, 10)
+            divider
+            BarButton(title: paused ? "Resume" : "Pause",
+                      systemImage: paused ? "play.fill" : "pause.fill",
+                      style: .neutral, action: onPauseToggle)
+            BarButton(title: "Stop", systemImage: "stop.fill", style: .stop, action: onStop)
+        }
     }
 }
 
-/// One pill in the selection toolbar. Active = solid white with dark text for a
-/// crisp, confident state; inactive lifts on hover.
+/// A bar action button with three looks: a prominent start, a neutral glass
+/// control, and a red stop.
+private struct BarButton: View {
+    enum Style { case recordStart, neutral, stop }
+    let title: String
+    let systemImage: String
+    let style: Style
+    let action: () -> Void
+    @State private var hover = false
+
+    private let red = Color(red: 1.0, green: 0.27, blue: 0.23)
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage).font(.system(size: 12.5, weight: .semibold))
+                Text(title).font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(fg)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Capsule().fill(bg))
+            .overlay(Capsule().strokeBorder(stroke))
+        }
+        .buttonStyle(.plain)
+        .onHover { h in hover = h; if h { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+        .animation(.easeOut(duration: 0.14), value: hover)
+    }
+
+    private var fg: Color {
+        switch style {
+        case .recordStart: return .white
+        case .neutral:     return .white.opacity(hover ? 1 : 0.85)
+        case .stop:        return red
+        }
+    }
+    private var bg: Color {
+        switch style {
+        case .recordStart: return red.opacity(hover ? 1 : 0.92)
+        case .neutral:     return .white.opacity(hover ? 0.16 : 0.001)
+        case .stop:        return red.opacity(hover ? 0.18 : 0.10)
+        }
+    }
+    private var stroke: Color {
+        switch style {
+        case .recordStart: return .white.opacity(0.18)
+        case .neutral:     return .clear
+        case .stop:        return red.opacity(0.35)
+        }
+    }
+}
+
+/// One pill in the picker (Area/Window/Screen/X). Active = solid white, dark text.
 private struct SelectionPill: View {
     let title: String
     let icon: String?
     let on: Bool
     let action: () -> Void
     @State private var hover = false
-
     private var iconOnly: Bool { title.isEmpty }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if let icon {
-                    Image(systemName: icon).font(.system(size: iconOnly ? 11 : 12.5, weight: .semibold))
-                }
+                if let icon { Image(systemName: icon).font(.system(size: iconOnly ? 11 : 12.5, weight: .semibold)) }
                 if !iconOnly { Text(title).font(.system(size: 13, weight: .medium)) }
             }
             .foregroundStyle(on ? Color.black : .white.opacity(hover ? 1 : 0.82))
@@ -396,24 +633,17 @@ private struct SelectionPill: View {
             .background(Capsule().fill(on ? Color.white : .white.opacity(hover ? 0.16 : 0)))
         }
         .buttonStyle(.plain)
-        // Pointing hand over the buttons; the arrow cursor rect covers the gaps.
-        .onHover { h in
-            hover = h
-            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .onHover { h in hover = h; if h { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
         .animation(.easeOut(duration: 0.14), value: hover)
     }
 }
 
-/// A defined clear-glass capsule for the floating selection toolbar.
 private struct ToolbarGlass: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
+            content.glassEffect(.regular, in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.16)))
         } else {
-            content.background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.16)))
+            content.background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().strokeBorder(.white.opacity(0.16)))
         }
     }
 }
