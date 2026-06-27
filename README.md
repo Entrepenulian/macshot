@@ -102,7 +102,7 @@ Menu-bar icon → **Catch the latest screenshot** pops the panel on your most re
 ## How it works
 
 - **Detection:** watches your screenshot folder and fires the instant a new capture's file is complete (it checks the file's end-of-file marker rather than guessing with a delay).
-- **The panel:** a borderless, non-activating window that floats over whatever you're doing without stealing focus.
+- **The panel:** a borderless, non-activating window that floats over whatever you're doing without stealing focus — **including fullscreen apps** — and follows you to whichever window or Space you switch to, so the preview is always there in the corner.
 - **Filing:** moves the file into `~/Desktop/<folder>`, creating the folder if it's new, and remembers it for next time.
 - **Recording:** ScreenCaptureKit captures the display, window, or cropped area; frames are H.264-encoded to MP4 in real time via AVAssetWriter (paused spans are dropped and re-timed out of the video), and GIFs are transcoded from the MP4 with ImageIO. Global ⌘P/⌘S use Carbon hot keys, so they fire system-wide without Accessibility permission.
 
