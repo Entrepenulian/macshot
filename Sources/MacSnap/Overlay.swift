@@ -47,6 +47,22 @@ final class StackModel: ObservableObject {
         let h = visible.map(\.cardHeight).reduce(0, +) + CGFloat(max(0, visible.count - 1)) * gap
         return min(h, screenCap)
     }
+
+    /// Keep the most-recent `maxVisible` previews ALWAYS visible (stacked), never pushed
+    /// into a scroll: if their natural heights would overflow the screen, shrink just those
+    /// cards by a shared factor so all of them fit. When they already fit, heights are natural.
+    func fitVisibleCards() {
+        let visible = Array(cards.prefix(maxVisible))
+        guard !visible.isEmpty else { return }
+        let gaps = CGFloat(visible.count - 1) * gap
+        let natural = visible.map { $0.naturalCardHeight }.reduce(0, +)
+        let scale: CGFloat = (natural + gaps > screenCap && natural > 0)
+            ? max(0.4, (screenCap - gaps) / natural) : 1
+        for (i, card) in cards.enumerated() {
+            let target: CGFloat = (i < visible.count && scale < 1) ? floor(card.naturalCardHeight * scale) : 0
+            if card.displayHeight != target { card.displayHeight = target }
+        }
+    }
 }
 
 /// The scrollable corner stack. Newest sits on top (just like before); older previews
@@ -170,6 +186,7 @@ final class OverlayController: NSObject {
         model.onModeChange = { [weak self] in self?.onModeChange?() }
         model.onSave = { [weak self] folder, name in self?.save(folder, name: name) }
         model.onCreate = { [weak self] name in self?.create(name) }
+        model.folderSearch = { [store] query in store.searchSystem(query) }
         model.onPin = { [weak self] in self?.pinAndSlideAway() }
     }
 
@@ -363,6 +380,7 @@ final class OverlayStack {
     private func relayout(animated: Bool = true) {
         guard let screen = NSScreen.main, let panel else { return }
         stackModel.screenCap = screen.frame.height - 2 * margin
+        stackModel.fitVisibleCards()        // shrink the newest few if needed so 3 always fit
         let h = max(1, stackModel.viewportHeight)
         let frame = NSRect(x: screen.frame.maxX - ShotView.width - margin,
                            y: screen.frame.minY + margin,
