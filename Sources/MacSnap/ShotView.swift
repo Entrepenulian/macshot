@@ -66,13 +66,34 @@ final class ShotModel: ObservableObject, Identifiable {
         self.recentFolders = recentFolders
     }
 
-    /// The quick-save pills: up to 3 most-recent folders, falling back to the Desktop
-    /// baseline so there's always at least one target.
+    /// The quick-save pills: up to 4 most-recent folders, falling back to the Desktop
+    /// baseline so there's always at least one target. They share the row width equally.
     var quickFolders: [Folder] {
-        let r = Array(recentFolders.prefix(3))
+        let r = Array(recentFolders.prefix(4))
         if !r.isEmpty { return r }
         if let root = allFolders.first(where: { $0.isRoot }) { return [root] }
         return Array(allFolders.prefix(1))
+    }
+
+    // Live filesystem search results (any Finder folder matching the query), filled
+    // asynchronously so typing stays smooth. Empty when the search box is empty.
+    @Published var systemMatches: [Folder] = []
+    var folderSearch: (String) -> [Folder] = { _ in [] }
+    private var searchSeq = 0
+    func runSearch() {
+        let q = searchTrimmed
+        searchSeq += 1
+        let seq = searchSeq
+        if q.isEmpty { systemMatches = []; onModeChange(); return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let r = self.folderSearch(q)
+            DispatchQueue.main.async {
+                guard seq == self.searchSeq else { return }   // ignore stale (out-of-order) results
+                self.systemMatches = r
+                self.onModeChange()                            // re-fit the list height
+            }
+        }
     }
 
     var dimsText: String {
@@ -84,17 +105,31 @@ final class ShotModel: ObservableObject, Identifiable {
     var metaText: String { "\(ext.uppercased())  ·  \(dimsText)" }
 
     // Rendered card height — drives the scrollable corner stack's sizing.
-    var cardHeight: CGFloat { ShotView.cardHeight(for: image) }
+    // `displayHeight` (set by the stack) lets the newest few cards shrink just enough to
+    // always fit on screen, so the most-recent 3 stay stacked instead of overflowing into
+    // a scroll. 0 means "use the natural height".
+    @Published var displayHeight: CGFloat = 0
+    var naturalCardHeight: CGFloat { ShotView.cardHeight(for: image) }
+    var cardHeight: CGFloat { displayHeight > 0 ? displayHeight : naturalCardHeight }
     var pickerHeight: CGFloat { 138 + min(CGFloat(max(rowCount, 1)) * 40 + 4, 248) }
     var currentHeight: CGFloat { mode == .picker ? pickerHeight : cardHeight }
 
     var searchTrimmed: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
     var filtered: [Folder] {
         let q = searchTrimmed.lowercased()
-        return q.isEmpty ? allFolders : allFolders.filter { $0.name.lowercased().contains(q) }
+        guard !q.isEmpty else { return allFolders }
+        // Folders you already know about (Desktop + ones you've saved into) first, then any
+        // other Finder folder the live search turned up (deduped by path).
+        let base = allFolders.filter { $0.name.lowercased().contains(q) }
+        var seen = Set(base.map { $0.url.path })
+        var out = base
+        for f in systemMatches where !seen.contains(f.url.path) {
+            seen.insert(f.url.path); out.append(f)
+        }
+        return out
     }
     var canCreate: Bool {
-        !searchTrimmed.isEmpty && !allFolders.contains { $0.name.lowercased() == searchTrimmed.lowercased() }
+        !searchTrimmed.isEmpty && !filtered.contains { $0.name.lowercased() == searchTrimmed.lowercased() }
     }
     var rowCount: Int { filtered.count + (canCreate ? 1 : 0) }
     var selectedFolder: Folder? {
@@ -143,7 +178,7 @@ struct ShotView: View {
         guard s.width > 0, s.height > 0 else { return 216 }
         return min(max(width * (s.height / s.width), minImageH), maxImageH)
     }
-    private var imageH: CGFloat { Self.cardHeight(for: model.image) }
+    private var imageH: CGFloat { model.cardHeight }
 
     // Fit the list to its rows (no big empty area), capped so it can scroll if long.
     private var listHeight: CGFloat { min(CGFloat(max(model.rowCount, 1)) * 40 + 4, 248) }
@@ -359,7 +394,7 @@ struct ShotView: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.rCard, style: .continuous)
             .strokeBorder(Theme.hairline, lineWidth: 1))
         .onAppear { model.onNeedsKey() }
-        .onChange(of: model.search) { _, _ in model.selection = 0 }
+        .onChange(of: model.search) { _, _ in model.selection = 0; model.runSearch() }
     }
 
     @ViewBuilder private var pickerBackground: some View {
@@ -461,13 +496,13 @@ struct PillButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol).font(.system(size: 14, weight: .semibold))
-                Text(label).font(.system(size: 14.5, weight: .semibold))
+            HStack(spacing: fill ? 5 : 7) {
+                Image(systemName: symbol).font(.system(size: fill ? 12.5 : 14, weight: .semibold))
+                Text(label).font(.system(size: fill ? 13 : 14.5, weight: .semibold))
                     .lineLimit(1).truncationMode(fill ? .tail : .middle)
             }
             .foregroundStyle(primary ? Theme.primaryInk : Theme.ink1)
-            .padding(.horizontal, fill ? 14 : 0)
+            .padding(.horizontal, fill ? 9 : 0)
             .frame(minWidth: fill ? nil : 132, maxWidth: fill ? .infinity : nil)
             .frame(height: 44)
             .fixedSize(horizontal: !fill, vertical: false)
